@@ -1,0 +1,21 @@
+/* read-along.css — ::highlight() styles + fallback mark styling.
+   Ships as a separate file for pages that prefer a <link>, and is
+   auto-adopted below when the API is present. */
+
+::highlight(read-along-sentence) {
+  background-color: color-mix(in oklab, Highlight 14%, transparent);
+  text-decoration: none;
+}
+
+::highlight(read-along-word) {
+  background-color: color-mix(in oklab, Highlight 45%, transparent);
+  color: HighlightText;
+}
+
+/* Fallback path (no CSS Custom Highlight API): <mark data-read-along> */
+mark[data-read-along] {
+  background-color: color-mix(in oklab, Highlight 45%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}

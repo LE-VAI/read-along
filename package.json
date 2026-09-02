@@ -1,0 +1,36 @@
+{
+  "name": "read-along",
+  "version": "0.1.0",
+  "description": "Embeddable bimodal read-along web component: karaoke-sync word highlighting with pluggable TTS engines (Web Speech, pre-synthesized audio, or your own).",
+  "type": "module",
+  "main": "src/read-along.js",
+  "exports": {
+    ".": "./src/read-along.js",
+    "./engines/webspeech.js": "./src/engines/webspeech.js",
+    "./engines/media.js": "./src/engines/media.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "read-along",
+    "read-aloud",
+    "tts",
+    "text-to-speech",
+    "accessibility",
+    "a11y",
+    "bimodal",
+    "karaoke",
+    "highlight",
+    "dyslexia",
+    "web-components",
+    "screen-reader"
+  ],
+  "license": "MIT",
+  "author": "Le Vain Bey",
+  "engines": {
+    "node": ">=18"
+  }
+}
