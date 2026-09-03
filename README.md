@@ -60,6 +60,13 @@ Everything else in the space is commercial.
 - **Robust word sync.** Locks onto `onboundary` events when the engine
   provides them; falls back to char-proportional interpolation when it
   doesn't (remote voices, Firefox).
+- **Never a silent dead end.** Browsers that expose `speechSynthesis` with
+  zero voices (common in embedded/webview browsers) get detected by a stall
+  watchdog and the component switches to visual-only mode — karaoke word
+  pacing without sound, announced to screen readers, instead of hanging on
+  "Playing" forever.
+- **One-voice policy.** Starting one `<read-along>` stops any other
+  currently playing on the page.
 - **Pluggable engines.** Ships with Web Speech (default) and a
   pre-synthesized-media engine (build-time TTS + JSON timing manifest —
   Piper/kokoro/cloud batch outputs all fit). Bring any engine implementing
@@ -81,6 +88,11 @@ or vendor the files — it's dependency-free ES modules.
 |---|---|---|
 | `lang` | page language | BCP-47 tag passed to the speech engine |
 | `rate` | `1` | initial speaking rate |
+| `force-fallback` | off | skip the CSS Custom Highlight API and wrap the active word in a `<mark>` element instead — for engines that expose the highlight registry but never paint it (undetectable programmatically), or when you want maximum-render-compatibility certainty |
+
+The word highlight is page-global: all `<read-along>` elements share one
+`Highlight` registry entry per name, so multiple instances on a page
+coexist correctly (each contributes and removes only the Ranges it owns).
 
 ## Controls
 

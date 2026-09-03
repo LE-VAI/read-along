@@ -4,14 +4,50 @@
  * Primary path: CSS Custom Highlight API (Highlight + CSS.highlights +
  * ::highlight() pseudo) — paints a Range without touching the DOM, so host
  * markup (links, emphasis, listeners) stays intact.
+ *
+ * The registry (CSS.highlights) is PAGE-WIDE and keyed by name. Two
+ * <read-along> elements on one page must therefore SHARE one Highlight
+ * object per name: if each instance registered its own, the second
+ * constructor would silently REPLACE the first's object, and every range
+ * added to the orphaned object would never paint — the first element's
+ * highlight dies with no error anywhere. Highlight objects are thus
+ * module-level singletons, refcounted across instances; each instance
+ * adds/removes only the Ranges it owns.
+ *
  * Fallback path: wrap the active word in <mark data-read-along> for engines
- * without the Highlight API. The mark is moved (unwrapped/re-wrapped) only
- * when the token changes; unwrap is clean and normalizes the text node.
+ * without the Highlight API, or when forced via the component's
+ * force-fallback option (for engines that expose the registry but never
+ * paint it — there is no way to detect that programmatically).
  */
 
 const HL_WORD = "read-along-word";
 const HL_SENTENCE = "read-along-sentence";
 const FALLBACK_TAG = "mark";
+
+/** name -> { highlight: Highlight, refs: number } */
+const SHARED = new Map();
+
+function acquire(name) {
+  let entry = SHARED.get(name);
+  if (!entry) {
+    const highlight = new Highlight();
+    CSS.highlights.set(name, highlight);
+    entry = { highlight, refs: 0 };
+    SHARED.set(name, entry);
+  }
+  entry.refs++;
+  return entry;
+}
+
+function release(name) {
+  const entry = SHARED.get(name);
+  if (!entry) return;
+  entry.refs--;
+  if (entry.refs <= 0) {
+    try { CSS.highlights.delete(name); } catch { /* registry gone */ }
+    SHARED.delete(name);
+  }
+}
 
 export function supportsHighlightAPI() {
   return (
@@ -25,6 +61,7 @@ export function supportsHighlightAPI() {
 /**
  * Map token text-offsets to DOM Ranges by walking the host's text nodes once.
  * Offsets are into the concatenated text-node content (what tokenize() saw).
+ * A token that straddles a text-node boundary maps to its first fragment only.
  * @returns {Map<number, Range>} token index -> Range
  */
 export function buildTokenRanges(host, tokens) {
@@ -40,8 +77,7 @@ export function buildTokenRanges(host, tokens) {
     if (node === null) break; // tokens outlive the DOM text — stop
     const localStart = Math.max(0, tok.start - nodeStart);
     const localEnd = Math.min(node.data.length, tok.end - nodeStart);
-    if (localEnd <= localStart) continue; // token straddles a node boundary —
-    // partially covering this node is fine; the next token maps onward.
+    if (localEnd <= localStart) continue;
     const r = document.createRange();
     r.setStart(node, localStart);
     r.setEnd(node, localEnd);
@@ -51,21 +87,29 @@ export function buildTokenRanges(host, tokens) {
 }
 
 export class Highlighter {
-  constructor(host) {
+  /**
+   * @param {Element} host element whose light-DOM text is tokenized
+   * @param {{forceFallback?: boolean}} [options]
+   */
+  constructor(host, { forceFallback = false } = {}) {
     this.host = host;
-    this.native = supportsHighlightAPI();
+    this.native = !forceFallback && supportsHighlightAPI();
+    this.destroyed = false;
     this.tokenRanges = new Map();
-    this.wordHighlight = null;
-    this.sentenceHighlight = null;
+    // Ranges this instance currently owns inside the shared Highlight objects.
+    this._wordRanges = [];
+    this._sentenceRanges = [];
     this.markEl = null;
     this._markIndex = -2;
     if (this.native) {
-      this.wordHighlight = new Highlight();
-      this.sentenceHighlight = new Highlight();
-      CSS.highlights.set(HL_WORD, this.wordHighlight);
-      CSS.highlights.set(HL_SENTENCE, this.sentenceHighlight);
+      this._wordEntry = acquire(HL_WORD);
+      this._sentenceEntry = acquire(HL_SENTENCE);
     }
   }
+
+  /** Registered shared Highlight objects (introspection/testing handle). */
+  get wordHighlight() { return this._wordEntry?.highlight ?? null; }
+  get sentenceHighlight() { return this._sentenceEntry?.highlight ?? null; }
 
   setTokenRanges(ranges) {
     this.tokenRanges = ranges;
@@ -74,9 +118,14 @@ export class Highlighter {
   /** Highlight token index i as the active word; clear the previous word. */
   setActive(i) {
     if (this.native) {
-      this.wordHighlight.clear();
+      const hl = this._wordEntry.highlight;
+      for (const r of this._wordRanges) hl.delete(r);
+      this._wordRanges.length = 0;
       const r = this.tokenRanges.get(i);
-      if (r) this.wordHighlight.add(r);
+      if (r) {
+        hl.add(r);
+        this._wordRanges.push(r);
+      }
     } else {
       this._fallbackMark(i);
     }
@@ -88,14 +137,21 @@ export class Highlighter {
    */
   setSentence(range) {
     if (!this.native) return;
-    this.sentenceHighlight.clear();
-    if (range) this.sentenceHighlight.add(range);
+    const hl = this._sentenceEntry.highlight;
+    for (const r of this._sentenceRanges) hl.delete(r);
+    this._sentenceRanges.length = 0;
+    if (range) {
+      hl.add(range);
+      this._sentenceRanges.push(range);
+    }
   }
 
   clear() {
     if (this.native) {
-      this.wordHighlight.clear();
-      this.sentenceHighlight.clear();
+      for (const r of this._wordRanges) this._wordEntry.highlight.delete(r);
+      for (const r of this._sentenceRanges) this._sentenceEntry.highlight.delete(r);
+      this._wordRanges.length = 0;
+      this._sentenceRanges.length = 0;
     }
     this._unwrapMark();
   }
@@ -103,11 +159,13 @@ export class Highlighter {
   destroy() {
     this.clear();
     if (this.native) {
-      try {
-        CSS.highlights.delete(HL_WORD);
-        CSS.highlights.delete(HL_SENTENCE);
-      } catch { /* already gone */ }
+      release(HL_WORD);
+      release(HL_SENTENCE);
+      this._wordEntry = null;
+      this._sentenceEntry = null;
+      this.native = false;
     }
+    this.destroyed = true;
   }
 
   // -- fallback path ------------------------------------------------------

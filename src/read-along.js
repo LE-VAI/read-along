@@ -80,6 +80,9 @@ template.innerHTML = `
 const ICON_PLAY = "M4 2.5v11l9-5.5z";
 const ICON_PAUSE = "M3.5 2.5h3.2v11H3.5zM9.3 2.5h3.2v11H9.3z";
 
+/** Instances holding the voice right now — enforces a one-voice policy. */
+const ACTIVE = new Set();
+
 class ReadAlong extends HTMLElement {
   constructor() {
     super();
@@ -94,6 +97,14 @@ class ReadAlong extends HTMLElement {
   }
 
   connectedCallback() {
+    if (this._prepared && this._highlighter?.destroyed) {
+      // Re-connected after disconnect destroyed the highlighter — rebuild
+      // it and re-map token ranges (the DOM may have changed too).
+      this._highlighter = new Highlighter(this, {
+        forceFallback: this.hasAttribute("force-fallback"),
+      });
+      this._highlighter.setTokenRanges(buildTokenRanges(this, this._tokens));
+    }
     this._prepare();
   }
 
@@ -112,7 +123,7 @@ class ReadAlong extends HTMLElement {
     if (this._state !== "idle") this.stop();
     this._engine = e;
     this._bindEngine();
-    if (e && this._chunks.length) e.setChunks(this._chunks);
+    if (e && this._chunks.length) e.setChunks?.(this._chunks);
   }
 
   play() { this._play(); }
@@ -156,7 +167,9 @@ class ReadAlong extends HTMLElement {
     const text = this.textContent || "";
     this._tokens = tokenize(text);
     this._chunks = chunkTokens(this._tokens);
-    this._highlighter = new Highlighter(this);
+    this._highlighter = new Highlighter(this, {
+      forceFallback: this.hasAttribute("force-fallback"),
+    });
     this._highlighter.setTokenRanges(buildTokenRanges(this, this._tokens));
     if (!this._engine) {
       this.engine = new WebSpeechEngine({
@@ -193,14 +206,23 @@ class ReadAlong extends HTMLElement {
     e.onError = (err) => {
       this._announce(`Read-along error: ${err.message}`);
       this._setStatus("Error");
-      this._stopUi();
+      this._setPlayingUi(false);
+      this._state = "idle";
     };
-    if (this._chunks.length) e.setChunks(this._chunks);
+    e.onMode = (mode) => {
+      if (mode !== "visual") return;
+      this._setStatus("Visual mode — no voices");
+      this._announce("No speech voices are available in this browser. Following the words without sound.");
+    };
+    if (this._chunks.length) e.setChunks?.(this._chunks);
   }
 
   _play() {
     this._prepare();
     if (!this._engine) return;
+    // One-voice policy: starting this player stops any other on the page.
+    for (const other of ACTIVE) if (other !== this) other.stop();
+    ACTIVE.add(this);
     if (this._state === "paused") {
       this._state = "playing";
       this._engine.resume();
@@ -226,6 +248,7 @@ class ReadAlong extends HTMLElement {
   }
 
   _stop() {
+    ACTIVE.delete(this);
     if (this._state === "idle") return;
     const wasEngine = this._engine;
     this._state = "idle";
@@ -236,6 +259,7 @@ class ReadAlong extends HTMLElement {
   }
 
   _finish() {
+    ACTIVE.delete(this);
     this._state = "idle";
     this._highlighter?.clear();
     this._setPlayingUi(false);

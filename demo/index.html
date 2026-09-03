@@ -41,8 +41,6 @@
   a { color: var(--accent); }
   footer { color: var(--dim); font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; margin-top: 36px; }
   code { font: 0.85em ui-monospace, "Cascadia Code", monospace; background: oklch(0.94 0.01 270); padding: 2px 6px; border-radius: 5px; }
-  ::highlight(read-along-sentence) { background-color: oklch(0.55 0.14 250 / 12%); }
-  ::highlight(read-along-word) { background-color: oklch(0.55 0.14 250 / 42%); }
 </style>
 <link rel="stylesheet" href="../src/read-along.css">
 </head>
@@ -80,6 +78,15 @@ learners, tired eyes, and anyone whose hands are busy.</p>
   <p>The speech engine is pluggable: Web Speech by default, or bring your own
   — a local neural voice in WASM, or pre-synthesized audio with a timing
   manifest, like the cards on this page's older sibling.</p>
+</read-along>
+
+<read-along class="card" force-fallback>
+  <h2>Guaranteed visible: the fallback path</h2>
+  <p>Some embedded browsers expose the highlight registry but never paint
+  it — an invisible highlight, the worst failure mode there is. When you
+  need certainty, the <code>force-fallback</code> attribute wraps the
+  active word in a real <code>mark</code> element instead: a touch of DOM
+  churn, but it renders in every engine that runs this component at all.</p>
 </read-along>
 
 <footer>

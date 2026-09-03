@@ -2,23 +2,26 @@
  * webspeech.js — Web Speech API engine with the Chrome cutoff defeated.
  *
  * Failure modes handled:
- *  1. The ~15s watchdog in desktop Chrome's bridge to OS speech engines kills
- *     long utterances (chromium:40747712) and long strings get truncated
- *     (~200+ chars). Defeat: every utterance stays under the cap via the
- *     chunker (chunk 0 ≤ 80 chars, later ≤ 180), plus a pause()/resume()
- *     keep-alive every 10s as a belt-and-suspenders guard.
- *  2. onboundary is unreliable (remote voices never fire it; Firefox is
- *     partial). Defeat: lock onto charIndex boundary events when they arrive;
- *     if none arrive within BOUNDARY_GRACE_MS, fall back to char-proportional
- *     interpolation (the proven ReadAloudTTS approach) driven by rAF, using a
- *     ~14.5 chars/sec @ rate 1 speaking-rate heuristic.
- *
- * Voice loading: getVoices() is async and platform-dependent; re-queried on
- * voiceschanged, best-match picked per lang at speak time.
+ *  1. The ~15s watchdog in desktop Chrome kills long utterances
+ *     (chromium:41294170, ~200-250 chars). Defeat: every utterance stays
+ *     under the cap via sentence-bounded chunking, plus a desktop-only
+ *     pause()/resume() keep-alive (it breaks speech on Android).
+ *  2. onboundary is an optimization, not a sync source: it never fires for
+ *     remote voices, fails on Chrome Android, fires sparsely on Safari,
+ *     effectively never on iOS. Defeat: char-proportional interpolation
+ *     (the proven ReadAloudTTS approach) driven by rAF when boundaries
+ *     stay silent for BOUNDARY_GRACE_MS.
+ *  3. Dead engines: embedded browsers (CEF/webviews) often expose
+ *     speechSynthesis with ZERO voices — speak() is a silent no-op, no
+ *     start/boundary/end ever fires. Defeat: a stall watchdog — if nothing
+ *     has progressed within STALL_MS, the engine switches to VISUAL-ONLY
+ *     mode: karaoke word pacing without audio, announced via onMode, so
+ *     the read-along still works (and never hangs in "Playing" forever).
  */
 
 const KEEPALIVE_MS = 10_000;
 const BOUNDARY_GRACE_MS = 600;
+const STALL_MS = 2_800;
 const CHARS_PER_SEC = 14.5; // ~150 wpm × ~5.8 chars/word, heuristic at rate 1
 
 export class WebSpeechEngine {
@@ -27,20 +30,28 @@ export class WebSpeechEngine {
     this.rate = options.rate ?? 1;
     this.pitch = options.pitch ?? 1;
     this.voiceName = options.voiceName ?? null;
-    this.onToken = options.onToken || null; // (tokenIndex) word boundary
+    this.onToken = options.onToken || null;
     this.onChunkStart = options.onChunkStart || null;
     this.onChunkEnd = options.onChunkEnd || null;
     this.onEnd = options.onEnd || null;
     this.onError = options.onError || null;
     this.onVoices = options.onVoices || null;
+    this.onMode = options.onMode || null; // 'visual' when audio is unavailable
     this._voices = [];
     this._keepalive = null;
     this._raf = null;
+    this._graceTimer = null;
+    this._stallTimer = null;
     this._stopped = true;
     this._paused = false;
+    this._visualOnly = false;
+    this._interpActive = false;
+    this._interpElapsed = 0;
+    this._vraf = null;
+    this._vT0 = 0;
     this._chunkIdx = -1;
     this._tokenIndex = -1;
-    this._chunkT0 = 0;
+    this._chunks = [];
     if (WebSpeechEngine.available) {
       this._refreshVoices();
       speechSynthesis.onvoiceschanged = () => this._refreshVoices();
@@ -60,25 +71,39 @@ export class WebSpeechEngine {
     return this._voices;
   }
 
+  /** Engine contract: register chunks without speaking. */
+  setChunks(chunks) {
+    this._chunks = chunks || [];
+  }
+
   /**
    * Speak chunks sequentially. Each chunk is one short utterance.
    * @param {Array<{tokens:Array,start:number,end:number}>} chunks
    */
   speak(chunks, startChunk = 0) {
     if (!WebSpeechEngine.available) {
-      this.onError?.(new Error("speechSynthesis unavailable in this browser"));
+      // No speechSynthesis at all (Firefox Android) — straight to visual.
+      this._chunks = chunks;
+      this._stopped = false;
+      this._paused = false;
+      this._engageVisualOnly();
       return;
     }
     this._chunks = chunks;
     this._stopped = false;
     this._paused = false;
+    this._visualOnly = false;
+    this._progress = false;
+    this._cancelVisual();
     this._startKeepalive();
     this._speakChunk(startChunk);
+    this._startStallWatchdog();
   }
 
   _speakChunk(i) {
-    if (this._stopped) return;
-    if (i >= this._chunksLength()) {
+    if (this._stopped || this._visualOnly) return;
+    this._cancelInterpolation();
+    if (i >= this._chunks.length) {
       this._finish();
       return;
     }
@@ -96,30 +121,29 @@ export class WebSpeechEngine {
     this.onChunkStart?.(i, chunk);
 
     let boundarySeen = false;
-    this._chunkT0 = performance.now();
     this._tokenIndex = -1;
+    this._chunkT0 = performance.now();
 
     utter.onboundary = (e) => {
-      if (this._stopped) return;
+      if (this._stopped || this._paused || this._visualOnly) return;
       if (e.name && e.name !== "word") return;
       boundarySeen = true;
+      this._progress = true;
+      this._clearGrace();
       this._cancelInterpolation();
       const tok = tokenAtChar(chunk, e.charIndex ?? 0);
       if (tok) this._emitToken(tok.index);
     };
 
     utter.onstart = () => {
-      if (this._stopped) return;
-      // If this engine/voice never fires boundaries, interpolate instead.
-      setTimeout(() => {
-        if (!this._stopped && !boundarySeen && this._chunkIdx === i) {
-          this._startInterpolation(chunk, i);
-        }
-      }, BOUNDARY_GRACE_MS);
+      if (this._stopped || this._visualOnly) return;
+      this._progress = true;
     };
 
     utter.onend = () => {
-      if (this._stopped) return;
+      if (this._stopped || this._visualOnly) return;
+      this._progress = true;
+      this._clearGrace();
       this._cancelInterpolation();
       this.onChunkEnd?.(i, chunk);
       this._speakChunk(i + 1);
@@ -129,20 +153,33 @@ export class WebSpeechEngine {
       // cancel() surfaces as interrupted/canceled — a clean stop, not an error.
       const err = ev?.error ?? "unknown";
       if (err === "interrupted" || err === "canceled" || err === "Canceled") return;
+      this._progress = true;
+      this._clearGrace();
       this._cancelInterpolation();
       this._stopKeepalive();
       this.onError?.(new Error(`speech synthesis error: ${err}`));
     };
 
     speechSynthesis.speak(utter);
+
+    // If this voice never fires boundaries, interpolate word timing.
+    this._armGrace(chunk, i, boundarySeen);
   }
 
-  // -- chunks are attached by the controller before speak() --------------
-  setChunks(chunks) {
-    this._chunks = chunks;
-  }
-  _chunksLength() {
-    return this._chunks ? this._chunks.length : 0;
+  /**
+   * After BOUNDARY_GRACE_MS without a word boundary, take over word
+   * timing with char-proportional interpolation. Re-armed on resume()
+   * in case the window elapsed while paused (otherwise a boundary-silent
+   * voice would leave the highlight frozen for the rest of the chunk).
+   */
+  _armGrace(chunk, i, hadBoundary) {
+    this._clearGrace();
+    this._graceTimer = setTimeout(() => {
+      if (!this._stopped && !this._paused && !hadBoundary &&
+          !this._visualOnly && this._chunkIdx === i) {
+        this._startInterpolation(chunk, i);
+      }
+    }, BOUNDARY_GRACE_MS);
   }
 
   _emitToken(globalIdx) {
@@ -152,9 +189,11 @@ export class WebSpeechEngine {
   }
 
   _startInterpolation(chunk, chunkIdx) {
-    this._cancelInterpolation();
+    this._cancelRaf();
+    this._interpActive = true;
+    this._chunkT0 = performance.now() - this._interpElapsed;
     const step = () => {
-      if (this._stopped || this._chunkIdx !== chunkIdx) return;
+      if (this._stopped || this._paused || this._chunkIdx !== chunkIdx) return;
       const elapsed = (performance.now() - this._chunkT0) / 1000;
       const chars = elapsed * CHARS_PER_SEC * this.rate;
       const tok = tokenAtChar(chunk, Math.floor(chars));
@@ -164,10 +203,91 @@ export class WebSpeechEngine {
     this._raf = requestAnimationFrame(step);
   }
 
-  _cancelInterpolation() {
+  /** Stop the rAF loop but KEEP interpolation mode + frozen offset. */
+  _cancelRaf() {
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
   }
+
+  /** Leave interpolation mode entirely (boundary takeover, chunk end, stop). */
+  _cancelInterpolation() {
+    this._cancelRaf();
+    this._interpActive = false;
+    this._interpElapsed = 0;
+  }
+
+  // -- stall watchdog → visual-only mode -----------------------------------
+
+  _startStallWatchdog() {
+    this._clearStall();
+    this._stallTimer = setTimeout(() => {
+      if (this._stopped || this._paused || this._visualOnly || this._progress) return;
+      // speak() was a silent no-op (typical zero-voice embedded browser):
+      // nothing is speaking and nothing is even queued.
+      if (!speechSynthesis.speaking && !speechSynthesis.pending) {
+        this._engageVisualOnly();
+      }
+    }, STALL_MS);
+  }
+
+  _clearStall() {
+    if (this._stallTimer) clearTimeout(this._stallTimer);
+    this._stallTimer = null;
+  }
+
+  _clearGrace() {
+    if (this._graceTimer) clearTimeout(this._graceTimer);
+    this._graceTimer = null;
+  }
+
+  /** Audio is dead — run karaoke word pacing without sound. */
+  _engageVisualOnly() {
+    this._visualOnly = true;
+    this._cancelInterpolation();
+    this._clearGrace();
+    this._stopKeepalive();
+    if (WebSpeechEngine.available) {
+      try { speechSynthesis.cancel(); } catch { /* nothing to cancel */ }
+    }
+    this.onMode?.("visual");
+    this._visualChunk(this._chunkIdx >= 0 ? this._chunkIdx : 0);
+  }
+
+  _visualChunk(i) {
+    if (this._stopped || !this._visualOnly) return;
+    if (i >= this._chunks.length) {
+      this._finish();
+      return;
+    }
+    this._chunkIdx = i;
+    const chunk = this._chunks[i];
+    this.onChunkStart?.(i, chunk);
+    const text = chunkText(chunk);
+    const durMs = (text.length / (CHARS_PER_SEC * this.rate)) * 1000;
+    this._vT0 = performance.now();
+    this._tokenIndex = -1;
+    const step = () => {
+      if (this._stopped || this._paused || !this._visualOnly || this._chunkIdx !== i) return;
+      const elapsed = performance.now() - this._vT0;
+      if (elapsed >= durMs) {
+        this.onChunkEnd?.(i, chunk);
+        this._visualChunk(i + 1);
+        return;
+      }
+      const chars = Math.floor((elapsed / 1000) * CHARS_PER_SEC * this.rate);
+      const tok = tokenAtChar(chunk, chars);
+      if (tok) this._emitToken(tok.index);
+      this._vraf = requestAnimationFrame(step);
+    };
+    this._vraf = requestAnimationFrame(step);
+  }
+
+  _cancelVisual() {
+    if (this._vraf) cancelAnimationFrame(this._vraf);
+    this._vraf = null;
+  }
+
+  // -- shared plumbing ------------------------------------------------------
 
   _pickVoice() {
     if (!this._voices.length) return null;
@@ -187,11 +307,10 @@ export class WebSpeechEngine {
     this._stopKeepalive();
     // Desktop-Chrome-only belt-and-suspenders for the ~15s watchdog
     // (chromium:41294170). On Android, pause()/resume() mid-utterance
-    // breaks synthesis entirely (documented Chromium bug) — the sentence
-    // chunking alone is the fix there, since chunks stay under the cap.
+    // breaks synthesis entirely — sentence chunking alone is the fix there.
     if (/Android/i.test(navigator.userAgent)) return;
     this._keepalive = setInterval(() => {
-      if (this._stopped || this._paused) return;
+      if (this._stopped || this._paused || this._visualOnly) return;
       if (speechSynthesis.speaking && !speechSynthesis.paused) {
         speechSynthesis.pause();
         speechSynthesis.resume();
@@ -206,37 +325,93 @@ export class WebSpeechEngine {
 
   _finish() {
     this._stopKeepalive();
+    this._clearGrace();
+    this._clearStall();
     this._cancelInterpolation();
+    this._cancelVisual();
     this.onEnd?.();
   }
 
   pause() {
     if (this._stopped || this._paused) return;
     this._paused = true;
-    this._cancelInterpolation();
-    speechSynthesis.pause();
+    if (this._visualOnly) {
+      this._vElapsedVisual = this._vT0 ? performance.now() - this._vT0 : 0;
+      this._cancelVisual();
+    } else {
+      // Freeze the interpolation clock but KEEP the mode: resume() restarts
+      // the rAF from this offset (_cancelInterpolation would zero it).
+      if (this._interpActive) this._interpElapsed = performance.now() - this._chunkT0;
+      this._cancelRaf();
+      speechSynthesis.pause();
+    }
   }
 
   resume() {
     if (!this._paused) return;
-    speechSynthesis.resume();
     this._paused = false;
-    // Restart interpolation clock so estimates don't jump across the pause.
-    this._chunkT0 = performance.now();
-    this._tokenIndex = -1;
+    if (this._visualOnly) {
+      // Continue visual pacing from where it froze.
+      const i = this._chunkIdx;
+      const chunk = this._chunks[i];
+      if (!chunk) return;
+      const text = chunkText(chunk);
+      const durMs = (text.length / (CHARS_PER_SEC * this.rate)) * 1000;
+      const frozen = Math.min(this._vElapsedVisual ?? 0, durMs);
+      this._vT0 = performance.now() - frozen;
+      this._tokenIndex = -1;
+      const step = () => {
+        if (this._stopped || !this._visualOnly || this._chunkIdx !== i) return;
+        const elapsed = performance.now() - this._vT0;
+        if (elapsed >= durMs) {
+          this.onChunkEnd?.(i, chunk);
+          this._visualChunk(i + 1);
+          return;
+        }
+        const chars = Math.floor((elapsed / 1000) * CHARS_PER_SEC * this.rate);
+        const tok = tokenAtChar(chunk, chars);
+        if (tok) this._emitToken(tok.index);
+        this._vraf = requestAnimationFrame(step);
+      };
+      this._vraf = requestAnimationFrame(step);
+    } else {
+      speechSynthesis.resume();
+      const chunk = this._chunks[this._chunkIdx];
+      if (this._interpActive && chunk) {
+        // Continue the interpolation clock from the frozen offset.
+        this._startInterpolation(chunk, this._chunkIdx);
+      } else if (chunk && !this._progress) {
+        // Engine was dead all along (no voices): re-arm the stall watchdog.
+        this._startStallWatchdog();
+      } else if (chunk) {
+        // Grace window elapsed while paused on a boundary-silent voice —
+        // re-arm or the highlight freezes for the rest of this chunk.
+        this._chunkT0 = performance.now();
+        this._armGrace(chunk, this._chunkIdx, false);
+      }
+    }
   }
 
   stop() {
     if (this._stopped) return;
     this._stopped = true;
     this._stopKeepalive();
+    this._clearGrace();
+    this._clearStall();
     this._cancelInterpolation();
-    try { speechSynthesis.cancel(); } catch { /* not speaking — fine */ }
+    this._cancelVisual();
+    if (WebSpeechEngine.available) {
+      try { speechSynthesis.cancel(); } catch { /* not speaking — fine */ }
+    }
     this.onEnd?.();
   }
 
   get position() {
     return { chunk: this._chunkIdx, token: this._tokenIndex };
+  }
+
+  get mode() {
+    return this._visualOnly ? "visual" : "audio";
   }
 }
 
