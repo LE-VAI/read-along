@@ -41,6 +41,10 @@
   a { color: var(--accent); }
   footer { color: var(--dim); font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; margin-top: 36px; }
   code { font: 0.85em ui-monospace, "Cascadia Code", monospace; background: oklch(0.94 0.01 270); padding: 2px 6px; border-radius: 5px; }
+  .kokoro-card { border-color: oklch(0.55 0.14 250 / 0.35); }
+  .kokoro-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 6px 0 14px; font: 500 13px/1.3 ui-sans-serif, system-ui, sans-serif; color: var(--dim); }
+  .kokoro-controls select { border-radius: 8px; padding: 5px 7px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; }
+  .kokoro-status { font-variant-numeric: tabular-nums; }
 </style>
 <link rel="stylesheet" href="../src/read-along.css">
 </head>
@@ -80,6 +84,32 @@ learners, tired eyes, and anyone whose hands are busy.</p>
   manifest, like the cards on this page's older sibling.</p>
 </read-along>
 
+<div class="card kokoro-card">
+  <h2>Local neural voice — runs in this tab</h2>
+  <p>The Web Speech cards above use whatever voice your browser ships. This
+  card swaps in <em>Kokoro</em> — an 82-million-parameter neural voice that
+  downloads once (~80 MB) and then runs entirely on your machine. First
+  press loads the model; after that it's instant, offline, private.</p>
+  <div class="kokoro-controls">
+    <label>Voice
+      <select id="kokoro-voice">
+        <option value="af_heart" selected>Heart — female, warm</option>
+        <option value="af_bella">Bella — female, soft</option>
+        <option value="am_michael">Michael — male</option>
+        <option value="am_pecan">Pecan — male, narrator</option>
+      </select>
+    </label>
+    <span id="kokoro-status" class="kokoro-status" aria-live="polite">Web Speech fallback until model loads</span>
+  </div>
+  <read-along id="kokoro-reader">
+    <p>Kokoro is a frontier text-to-speech model for its size. In this card
+    the words follow the <em>actual audio</em>: timing comes from the
+    synthesized sound itself, not from a guess about how fast voices read.
+    Pause is sample-accurate — the voice stops mid-word and resumes from
+    the exact same sample.</p>
+  </read-along>
+</div>
+
 <read-along class="card" force-fallback>
   <h2>Guaranteed visible: the fallback path</h2>
   <p>Some embedded browsers expose the highlight registry but never paint
@@ -94,8 +124,52 @@ learners, tired eyes, and anyone whose hands are busy.</p>
   works with the page's own fonts and colors.
 </footer>
 
+<script type="importmap">
+{
+  "imports": {
+    "kokoro-js": "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.js",
+    "phonemizer": "https://cdn.jsdelivr.net/npm/phonemizer@1.2.1/dist/phonemizer.js",
+    "@huggingface/transformers": "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6/dist/transformers.js",
+    "path": "data:text/javascript,export default {};export function join(){}",
+    "fs/promises": "data:text/javascript,export default {}"
+  }
+}
+</script>
 <script type="module">
   import "../src/read-along.js";
+  // Optional neural engine — loads lazily on first interaction with the
+  // kokoro card (nobody should download ~80 MB they didn't ask for).
+  const card = document.getElementById("kokoro-reader");
+  const status = document.getElementById("kokoro-status");
+  const voiceSel = document.getElementById("kokoro-voice");
+  let engine = null;
+  let loading = false;
+  const setKokoro = async () => {
+    if (loading) return;
+    loading = true;
+    if (card.state !== "idle") card.stop();
+    status.textContent = "Loading voice model — first time only";
+    try {
+      const { KokoroEngine } = await import("../src/engines/kokoro.js");
+      engine = new KokoroEngine({ voice: voiceSel.value });
+      engine.onError = () => {
+        status.textContent = "Kokoro unavailable — browser voice stays";
+      };
+      engine.onProgress = (p, label) => {
+        status.textContent = p < 1 ? `${label}…` : "Local neural voice active";
+      };
+      await engine.load();
+      card.engine = engine;
+      status.textContent = "Local neural voice active — press Listen";
+    } catch (err) {
+      status.textContent = `Kokoro unavailable — ${err?.message ?? "offline?"}`;
+      console.error("kokoro load failed:", err);
+    } finally {
+      loading = false;
+    }
+  };
+  voiceSel.addEventListener("change", () => { if (engine) setKokoro(); });
+  card.addEventListener("pointerdown", () => { if (!engine) setKokoro(); }, { once: true });
 </script>
 </body>
 </html>

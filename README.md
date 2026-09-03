@@ -119,6 +119,41 @@ readAlongEl.engine = new MyEngine();
 The engine contract and token/chunk formats live in `src/tokenizer.js` and
 `src/engines/*.js`.
 
+## Local neural voice (Kokoro)
+
+`src/engines/kokoro.js` is an optional engine that runs the
+[Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX)
+neural voice (via [kokoro-js](https://www.npmjs.com/package/kokoro-js))
+entirely in the browser — real voices on any tab, including embedded
+browsers whose Web Speech has none.
+
+```js
+import { KokoroEngine } from "read-along/engines/kokoro.js"; // (or vendor the file)
+const engine = new KokoroEngine({ voice: "af_heart" }); // af_bella, am_michael, …
+await engine.load();          // optional: preload the ~80 MB model (q8)
+el.engine = engine;           // else it loads on first play
+```
+
+Honest notes:
+
+- **Timing.** The public ONNX export does not expose the model's native
+  word alignment (Python `KPipeline` has it; the ONNX graph itself does
+  not). The engine distributes each chunk's *measured* audio duration
+  across its characters — real durations, sentence-bounded error — and
+  drives the highlight from the `AudioContext` sample clock, not wall-clock
+  guessing. Pause is sample-accurate (`AudioContext.suspend()` freezes the
+  clock; resume continues from the exact sample).
+- **Cost.** First load downloads ~80 MB (q8) and compiles WASM — expect
+  ~30–60 s on a cold cache, seconds warm. Synthesis is cached per chunk
+  (restart/seek is instant) and pipelined one chunk ahead.
+- **Demo wiring.** kokoro-js's ESM dist statically imports the Node
+  built-ins `path` and `fs/promises`, which browsers can't resolve — an
+  import map must stub both (see `demo/index.html`). And in the browser,
+  transformers.js accepts only `wasm`/`webgpu` devices — `"cpu"` is a
+  Node-only device name (the engine translates it).
+- This engine pulls in `kokoro-js` as a dependency, so it lives outside
+  the zero-dependency core; the component itself never imports it.
+
 ## Engine notes (Web Speech, 2026)
 
 - Desktop Chrome truncates long utterances (~15 s watchdog, ~200–250 chars;
