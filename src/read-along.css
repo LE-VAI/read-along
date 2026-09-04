@@ -12,17 +12,22 @@
    Two visibility channels on the active word: a strong background tint
    plus a solid underline. If a hostile engine drops one channel, the
    other still shows. ::highlight() supports color, background-color,
-   text-decoration, text-shadow — NOT border/padding/border-radius. */
+   text-decoration, text-shadow — NOT border/padding/border-radius.
+
+   Theming: --ra-highlight/--ra-accent override the word color per page
+   or per instance (e.g. read-along { --ra-highlight: rgb(255 196 0 / .5); }).
+   Same trap as color-mix applies: keep the value a plain rgb(); exotic
+   color functions risk silent drop in hostile engines. */
 
 ::highlight(read-along-sentence) {
   background-color: rgb(64 132 255 / 0.16);
 }
 
 ::highlight(read-along-word) {
-  background-color: rgb(64 132 255 / 0.5);
+  background-color: var(--ra-highlight, rgb(64 132 255 / 0.5));
   color: inherit;
   text-decoration: underline;
-  text-decoration-color: rgb(33 74 255);
+  text-decoration-color: var(--ra-accent, rgb(33 74 255));
   text-decoration-thickness: 2px;
   text-underline-offset: 2px;
 }
@@ -31,12 +36,15 @@
    a real <mark data-read-along> wrapping the active word. As a real
    element it may also use padding/radius. */
 mark[data-read-along] {
-  background-color: rgb(64 132 255 / 0.5);
+  background-color: var(--ra-highlight, rgb(64 132 255 / 0.5));
   color: inherit;
   text-decoration: underline;
-  text-decoration-color: rgb(33 74 255);
+  text-decoration-color: var(--ra-accent, rgb(33 74 255));
   text-decoration-thickness: 2px;
   text-underline-offset: 2px;
   border-radius: 3px;
   padding: 0 1px;
 }
+
+/* Seekable instances hint that words are clickable. */
+[seekable] { cursor: pointer; }

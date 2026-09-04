@@ -67,9 +67,18 @@ Everything else in the space is commercial.
   "Playing" forever.
 - **One-voice policy.** Starting one `<read-along>` stops any other
   currently playing on the page.
-- **Pluggable engines.** Ships with Web Speech (default) and a
+- **Word-level seek.** `seekToToken(i)` (or the `seekable` attribute — click
+  any word mid-read) restarts playback at an exact word, in every engine.
+- **External clock.** An engine that renders-only: a host process outside
+  the browser supplies word timings and ticks the clock — the bridge
+  contract for desktop readers and assistive controllers.
+- **Theming.** `--ra-highlight` / `--ra-accent` CSS custom properties set
+  the highlight color per page or per instance (plain `rgb()` values —
+  exotic color functions risk silent drops in hostile engines).
+- **Pluggable engines.** Ships with Web Speech (default), a
   pre-synthesized-media engine (build-time TTS + JSON timing manifest —
-  Piper/kokoro/cloud batch outputs all fit). Bring any engine implementing
+  Piper/kokoro/cloud batch outputs all fit), a local neural voice (Kokoro),
+  and the external-clock engine. Bring any engine implementing
   `speak/pause/resume/stop/setChunks` + `onToken` callbacks.
 - **Accessible controls.** Real buttons, `aria-pressed`, visible focus,
   polite live announcements, keyboard operable end to end.
@@ -88,6 +97,7 @@ or vendor the files — it's dependency-free ES modules.
 |---|---|---|
 | `lang` | page language | BCP-47 tag passed to the speech engine |
 | `rate` | `1` | initial speaking rate |
+| `seekable` | off | clicking/tapping a word while playing restarts the reading from that word (never steals clicks on links/buttons) |
 | `force-fallback` | off | skip the CSS Custom Highlight API and wrap the active word in a `<mark>` element instead — for engines that expose the highlight registry but never paint it (undetectable programmatically), or when you want maximum-render-compatibility certainty |
 
 The word highlight is page-global: all `<read-along>` elements share one
@@ -97,8 +107,13 @@ coexist correctly (each contributes and removes only the Ranges it owns).
 ## Controls
 
 - `play()` / `pause()` / `stop()` / `toggle()`
+- `seekToToken(i)` — start playing from word *i* (0-based)
+- `activeToken` — index of the word currently spoken (-1 when idle)
 - `engine` property — swap in your own engine before first play
 - `state` — `"idle" | "playing" | "paused"`
+- events: `play` / `pause` / `stop` / `done` / `seek` (bubbles; `detail.token`
+  carries the engine's position) — hosts driving an external clock use these
+  to anchor their own timers
 
 ## Custom engines
 
@@ -108,7 +123,7 @@ remote service, or a lab prototype:
 ```js
 class MyEngine {
   setChunks(chunks) {}
-  speak(chunks, startChunk = 0) { /* call onToken(i) as words start */ }
+  speak(chunks, startWord = 0) { /* call onToken(i) as words start */ }
   pause() {}
   resume() {}
   stop() {}
@@ -116,8 +131,42 @@ class MyEngine {
 readAlongEl.engine = new MyEngine();
 ```
 
+`startWord` is a global token index — seek lands on the exact word, not the
+containing chunk.
+
 The engine contract and token/chunk formats live in `src/tokenizer.js` and
 `src/engines/*.js`.
+
+## External clock (host-driven highlighting)
+
+`src/engines/external.js` — render-only mode: the host owns the audio and the
+clock, the component just highlights. This is the bridge contract for
+non-browser speech systems:
+
+- a **desktop reader daemon** (e.g. a Piper TTS process) streaming word
+  timings while it plays audio itself
+- an **assistive/BCI controller** that knows the reading position and needs
+  a text surface to mirror it
+- **build-time timings with no audio at all** — silent visual karaoke
+
+```js
+import { ExternalEngine } from "read-along/engines/external.js";
+const engine = new ExternalEngine({ words: [] }); // [tokenIndex, startMs, endMs]
+el.engine = engine;
+el.play();
+engine.setWords([[0, 0, 260], [1, 260, 520], /* … */]); // whenever ready
+engine.tick(1234); // host heartbeat: elapsed playback ms
+```
+
+Semantics: `tick()` advances the word pointer (monotonic; jumps larger than
+a word are followed, so a host restarting earlier works too). If the host
+goes silent for >250 ms the engine falls back to real time — a dead bridge
+never freezes the karaoke. `setWords()` can arrive late and grow during
+playback (progressive synthesis). `speak(chunks, startWord)` starts at any
+word. Pause freezes everything until `resume()`.
+
+Timings format matches the MediaEngine manifest (`[tokenIndex, startMs,
+endMs]`) — one producer can feed both engines.
 
 ## Local neural voice (Kokoro)
 
@@ -195,10 +244,10 @@ Honest notes:
 
 ## Status
 
-v0 — core engine, highlight layer, both engines, demo. Roadmap: sentence
-click-to-seek, per-token click-to-play-from, kokoro-js engine package,
-tests, npm publish. Not yet production-hardened; verify on your target
-browsers.
+v0 — core engine, highlight layer, four engines (Web Speech, media,
+Kokoro, external clock), word-level seek + click-to-seek, CSS-var theming,
+demo. Roadmap: formal test suite, npm publish, desktop-overlay reference
+integration. Not yet production-hardened; verify on your target browsers.
 
 ## License
 

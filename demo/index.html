@@ -42,6 +42,7 @@
   footer { color: var(--dim); font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; margin-top: 36px; }
   code { font: 0.85em ui-monospace, "Cascadia Code", monospace; background: oklch(0.94 0.01 270); padding: 2px 6px; border-radius: 5px; }
   .kokoro-card { border-color: oklch(0.55 0.14 250 / 0.35); }
+  .external-card { border-color: oklch(0.7 0.12 160 / 0.4); }
   .kokoro-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 6px 0 14px; font: 500 13px/1.3 ui-sans-serif, system-ui, sans-serif; color: var(--dim); }
   .kokoro-controls select { border-radius: 8px; padding: 5px 7px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; }
   .kokoro-status { font-variant-numeric: tabular-nums; }
@@ -119,6 +120,33 @@ learners, tired eyes, and anyone whose hands are busy.</p>
   churn, but it renders in every engine that runs this component at all.</p>
 </read-along>
 
+<div class="card external-card">
+  <h2>External clock — the host owns the voice</h2>
+  <p>This card has <em>no speech engine at all</em>. Something outside the
+  browser — a desktop reader, a native app, an assistive controller —
+  supplies the word timings and ticks the clock. Here a stand-in host
+  drives it; on the desktop, the Piper daemon does. Click any word while
+  it plays to jump the reading there.</p>
+  <div class="kokoro-controls">
+    <label>Highlight
+      <select id="ra-color">
+        <option value="rgb(64 132 255 / 0.5)" selected>Blue (default)</option>
+        <option value="rgb(255 196 0 / 0.55)">Amber</option>
+        <option value="rgb(52 199 89 / 0.5)">Green</option>
+        <option value="rgb(255 69 58 / 0.45)">Red</option>
+        <option value="rgb(236 72 199 / 0.45)">Magenta</option>
+      </select>
+    </label>
+    <span id="external-status" class="kokoro-status" aria-live="polite">Host clock idle</span>
+  </div>
+  <read-along id="external-reader" seekable>
+    <p>The clock is not mine. A host process decided when each of these
+    words began and ended, and the component simply obeyed — the same
+    contract a desktop text-to-speech daemon or an eye-gaze controller
+    would use to drive highlighting without the browser saying a word.</p>
+  </read-along>
+</div>
+
 <footer>
   MIT licensed · no dependencies · ~5 kB unminified ·
   works with the page's own fonts and colors.
@@ -137,6 +165,81 @@ learners, tired eyes, and anyone whose hands are busy.</p>
 </script>
 <script type="module">
   import "../src/read-along.js";
+  import { ExternalEngine } from "../src/engines/external.js";
+
+  // --- External-clock demo card -----------------------------------------
+  // A stand-in "host": supplies word timings (260ms/word, ~reading pace)
+  // and ticks the engine's clock from OUTSIDE — the same call pattern the
+  // ReadAloudTTS desktop daemon will use over its bridge.
+  const extReader = document.getElementById("external-reader");
+  const extStatus = document.getElementById("external-status");
+  const extEngine = new ExternalEngine({ words: [] });
+  extReader.engine = extEngine;
+
+  const hostTimer = { id: 0, t0: 0, fromWord: 0 };
+  const WORD_MS = 260;
+  const syncWords = () => {
+    const total = extReader._tokens.length;
+    const words = [];
+    for (let i = 0; i < total; i++) words.push([i, i * WORD_MS, (i + 1) * WORD_MS]);
+    extEngine.setWords(words);
+    return total;
+  };
+  const startTicking = (fromWord) => {
+    clearInterval(hostTimer.id);
+    hostTimer.t0 = performance.now();
+    hostTimer.fromWord = fromWord;
+    hostTimer.id = setInterval(() => {
+      extEngine.tick((performance.now() - hostTimer.t0) + hostTimer.fromWord * WORD_MS);
+    }, 60);
+  };
+  const stopTicking = (label) => {
+    clearInterval(hostTimer.id);
+    hostTimer.id = 0;
+    if (label) extStatus.textContent = label;
+  };
+
+  extReader.addEventListener("play", () => {
+    const total = syncWords();
+    const at = extEngine.position >= 0 ? extEngine.position : 0;
+    startTicking(at);
+    extStatus.textContent = `Host ticking — ${total} words timed`;
+  });
+  extReader.addEventListener("pause", () =>
+    stopTicking(`Host paused at word ${(extEngine.position ?? 0) + 1}`));
+  extReader.addEventListener("stop", () => stopTicking("Host clock idle"));
+  extReader.addEventListener("done", () => stopTicking("Host finished"));
+  extReader.addEventListener("seek", (e) => {
+    // The component already restarted the engine at the seeked word; the
+    // host re-anchors its clock to the same word.
+    startTicking(e.detail?.token?.token ?? e.detail?.token ?? 0);
+    extStatus.textContent = `Host re-anchored at word ${(e.detail?.token?.token ?? e.detail?.token ?? 0) + 1}`;
+  });
+
+  // Color picker → CSS custom properties on the instance (the exact
+  // mechanism the desktop overlay's highlight_color setting will use).
+  document.getElementById("ra-color").addEventListener("change", (e) => {
+    const v = e.target.value;
+    const accent = v.replace(/ \/ 0\.\d+\)/, " / 1)");
+    extReader.style.setProperty("--ra-highlight", v);
+    extReader.style.setProperty("--ra-accent", accent);
+  });
+
+  // ?autotest=external — deterministic self-driving pass for headless
+  // verification (also a nice hands-free demo): amber, play, seek to
+  // word 20, pause there, leave the highlight visible.
+  if (new URLSearchParams(location.search).get("autotest") === "external") {
+    const sel = document.getElementById("ra-color");
+    sel.value = "rgb(255 196 0 / 0.55)";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    extReader.play();
+    setTimeout(() => { extReader.seekToToken(20); }, 900);
+    setTimeout(() => { extReader.pause(); }, 1800);
+    setTimeout(() => {
+      extReader.scrollIntoView({ block: "center" });
+    }, 1900);
+  }
+
   // Optional neural engine — loads lazily on first interaction with the
   // kokoro card (nobody should download ~80 MB they didn't ask for).
   const card = document.getElementById("kokoro-reader");

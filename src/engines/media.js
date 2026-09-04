@@ -20,6 +20,15 @@
 
 const POLL_MS = 60;
 
+/** Chunk index containing global token index `word` (-1 if not found). */
+function locateTokenChunk(chunks, word) {
+  for (let i = 0; i < chunks.length; i++) {
+    const toks = chunks[i].tokens;
+    if (word >= toks[0].index && word <= toks[toks.length - 1].index) return i;
+  }
+  return -1;
+}
+
 export class MediaEngine {
   constructor(options = {}) {
     this.manifest = options.manifest ?? { chunks: [] };
@@ -35,18 +44,29 @@ export class MediaEngine {
     this._paused = false;
   }
 
-  setChunks(_chunks) { /* chunk plan comes from the manifest, not tokens */ }
+  setChunks(chunks) { this._chunks = chunks || []; }
 
   get rate() { return this._audio?.playbackRate ?? 1; }
   set rate(r) { if (this._audio) this._audio.playbackRate = r; }
 
-  speak(_chunks, startChunk = 0) {
+  speak(_chunks, startWord = 0) {
     this._stopped = false;
     this._paused = false;
-    this._playChunk(startChunk);
+    let startChunk = 0;
+    let offsetMs = 0;
+    if (startWord > 0) {
+      const ci = locateTokenChunk(this._chunks, startWord);
+      if (ci >= 0) {
+        startChunk = ci;
+        const entry = this.manifest.chunks[ci];
+        const hit = entry?.words?.find((w) => w[0] === startWord);
+        if (hit) offsetMs = hit[1];
+      }
+    }
+    this._playChunk(startChunk, offsetMs);
   }
 
-  _playChunk(i) {
+  _playChunk(i, offsetMs = 0) {
     if (this._stopped) return;
     const entry = this.manifest.chunks[i];
     if (!entry) { this.onEnd?.(); return; }
@@ -69,7 +89,14 @@ export class MediaEngine {
 
     this._audio.src = entry.src;
     this.onChunkStart?.(i, null);
-    this._audio.play().catch((e) => {
+    this._playPromise = this._audio.play();
+    // Word-level seek: drop the needle at the word's start time.
+    if (offsetMs > 0) {
+      this._playPromise = this._playPromise
+        .then(() => { this._audio.currentTime = offsetMs / 1000; })
+        .catch(() => {});
+    }
+    this._playPromise.catch((e) => {
       if (this._stopped) return;
       this.onError?.(new Error(`playback blocked: ${e.message}`));
     });

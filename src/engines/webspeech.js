@@ -79,17 +79,26 @@ export class WebSpeechEngine {
   /**
    * Speak chunks sequentially. Each chunk is one short utterance.
    * @param {Array<{tokens:Array,start:number,end:number}>} chunks
+   * @param {number} startWord global token index to start from (seek)
    */
-  speak(chunks, startChunk = 0) {
+  speak(chunks, startWord = 0) {
+    this._chunks = chunks;
+    this._pendingSlice = null;
+    let startChunk = 0;
+    if (startWord > 0) {
+      const ci = locateTokenChunk(chunks, startWord);
+      if (ci >= 0) {
+        startChunk = ci;
+        this._pendingSlice = startWord;
+      }
+    }
     if (!WebSpeechEngine.available) {
       // No speechSynthesis at all (Firefox Android) — straight to visual.
-      this._chunks = chunks;
       this._stopped = false;
       this._paused = false;
       this._engageVisualOnly();
       return;
     }
-    this._chunks = chunks;
     this._stopped = false;
     this._paused = false;
     this._visualOnly = false;
@@ -100,6 +109,25 @@ export class WebSpeechEngine {
     this._startStallWatchdog();
   }
 
+  /**
+   * The chunk to speak for index i, consuming a pending seek slice. A seek
+   * into mid-chunk swaps in a sliced copy (tokens from the seek word on);
+   * tokens keep their GLOBAL .index so highlights still map. The slice is
+   * one-shot: the next _speakChunk(i+1) gets the full chunk.
+   */
+  _chunkFor(i) {
+    const chunk = this._chunks[i];
+    if (chunk && this._pendingSlice != null) {
+      const from = this._pendingSlice;
+      this._pendingSlice = null;
+      const k = chunk.tokens.findIndex((t) => t.index === from);
+      if (k > 0) {
+        return { tokens: chunk.tokens.slice(k), start: chunk.tokens[k].start, end: chunk.end };
+      }
+    }
+    return chunk;
+  }
+
   _speakChunk(i) {
     if (this._stopped || this._visualOnly) return;
     this._cancelInterpolation();
@@ -108,7 +136,7 @@ export class WebSpeechEngine {
       return;
     }
     this._chunkIdx = i;
-    const chunk = this._chunks[i];
+    const chunk = this._chunkFor(i);
     const utter = new SpeechSynthesisUtterance(chunkText(chunk));
     utter.lang = this.lang;
     utter.rate = this.rate;
@@ -250,7 +278,12 @@ export class WebSpeechEngine {
       try { speechSynthesis.cancel(); } catch { /* nothing to cancel */ }
     }
     this.onMode?.("visual");
-    this._visualChunk(this._chunkIdx >= 0 ? this._chunkIdx : 0);
+    let i = this._chunkIdx >= 0 ? this._chunkIdx : 0;
+    if (this._pendingSlice != null) {
+      const ci = locateTokenChunk(this._chunks, this._pendingSlice);
+      if (ci >= 0) i = ci;
+    }
+    this._visualChunk(i);
   }
 
   _visualChunk(i) {
@@ -260,7 +293,7 @@ export class WebSpeechEngine {
       return;
     }
     this._chunkIdx = i;
-    const chunk = this._chunks[i];
+    const chunk = this._chunkFor(i);
     this.onChunkStart?.(i, chunk);
     const text = chunkText(chunk);
     const durMs = (text.length / (CHARS_PER_SEC * this.rate)) * 1000;
@@ -418,6 +451,15 @@ export class WebSpeechEngine {
 /** Join a chunk's tokens back into speakable text. */
 export function chunkText(chunk) {
   return chunk.tokens.map((t) => t.text).join(" ");
+}
+
+/** Chunk index containing global token index `word` (-1 if not found). */
+export function locateTokenChunk(chunks, word) {
+  for (let i = 0; i < chunks.length; i++) {
+    const toks = chunks[i].tokens;
+    if (word >= toks[0].index && word <= toks[toks.length - 1].index) return i;
+  }
+  return -1;
 }
 
 /** Token whose chunk-local [offset, offset+len) contains charIndex. */

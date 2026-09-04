@@ -131,7 +131,29 @@ class ReadAlong extends HTMLElement {
   toggle() { this._state === "playing" ? this._pause() : this._play(); }
   stop() { this._stop(); }
 
-  static get observedAttributes() { return ["lang", "rate"]; }
+  /**
+   * Seek to a token index and start playing from there (word granularity).
+   * No-op while paused — resume first, or stop() then seekToToken().
+   * @param {number} i token index (0-based)
+   */
+  seekToToken(i) {
+    this._prepare();
+    if (!this._engine || this._state === "paused") return;
+    if (i < 0 || i >= this._tokens.length) return;
+    this._stop();
+    this._state = "playing";
+    this._bindEngine();
+    this._engine.rate = parseFloat(this._els.speed.value) || 1;
+    this._engine.speak(this._chunks, i);
+    this._setPlayingUi(true);
+    this._announce(`Playing from word ${i + 1}`);
+    this._emitEvent("seek");
+  }
+
+  /** Index of the word currently being spoken (-1 when idle). */
+  get activeToken() { return this._highlighter ? this._highlighter._markIndex : -1; }
+
+  static get observedAttributes() { return ["lang", "rate", "seekable"]; }
 
   attributeChangedCallback(name, _old, value) {
     if (!this._engine) return;
@@ -171,12 +193,83 @@ class ReadAlong extends HTMLElement {
       forceFallback: this.hasAttribute("force-fallback"),
     });
     this._highlighter.setTokenRanges(buildTokenRanges(this, this._tokens));
+    if (this.hasAttribute("seekable")) this._wireSeek();
     if (!this._engine) {
       this.engine = new WebSpeechEngine({
         lang: this.getAttribute("lang") || undefined,
         rate: parseFloat(this.getAttribute("rate")) || 1,
       });
     }
+  }
+
+  // -- click-to-seek ---------------------------------------------------------
+
+  /**
+   * When the `seekable` attribute is present, clicks/taps on the host's
+   * words restart playback from that word. Word hit-testing reuses the
+   * token ranges (a click inside a token's Range owns that token); clicks
+   * between words fall to the NEAREST token, so every tap seeks somewhere
+   * useful instead of only exact hits.
+   */
+  _wireSeek() {
+    if (this._seekWired) return;
+    this._seekWired = true;
+    const isInteractive = (el) =>
+      el.closest && el.closest("a, button, input, select, textarea, [contenteditable]");
+    const handler = (ev) => {
+      if (this._state !== "playing") return; // seek only while reading
+      if (isInteractive(ev.target)) return;  // never steal link/button clicks
+      const i = this._tokenAt(ev);
+      if (i >= 0) {
+        ev.preventDefault();
+        this.seekToToken(i);
+      }
+    };
+    this.addEventListener("pointerdown", handler);
+  }
+
+  /** Token index under a pointer event, or nearest if between words. */
+  _tokenAt(ev) {
+    const host = this;
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(ev.clientX, ev.clientY);
+      if (r && host.contains(r.startContainer)) return this._tokenForOffset(r.startContainer, r.startOffset, true);
+    } else if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(ev.clientX, ev.clientY);
+      if (p && host.contains(p.offsetNode)) return this._tokenForOffset(p.offsetNode, p.offset, true);
+    }
+    return -1;
+  }
+
+  /**
+   * Map a (text node, offset) pair to a token index by binary search over
+   * the concatenated text. When the offset falls in whitespace (not inside
+   * any token), snap to the nearest token.
+   */
+  _tokenForOffset(node, offset, _snap) {
+    // Absolute offset of this node's start within the host's text stream.
+    const walker = document.createTreeWalker(this, NodeFilter.SHOW_TEXT);
+    let absBase = 0, n = walker.nextNode(), target = null, targetBase = 0;
+    while (n !== null) {
+      if (n === node) { target = n; targetBase = absBase; break; }
+      absBase += n.data.length;
+      n = walker.nextNode();
+    }
+    if (!target) return -1;
+    const abs = targetBase + offset;
+    // Binary search tokens by [start, end).
+    let lo = 0, hi = this._tokens.length - 1, best = -1, bestDist = Infinity;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const t = this._tokens[mid];
+      if (abs < t.start) { hi = mid - 1; }
+      else if (abs >= t.end) { lo = mid + 1; }
+      else return t.index; // inside a word
+      // Track nearest edge for the whitespace-snap fallback.
+      const d = Math.min(Math.abs(abs - t.start), Math.abs(abs - t.end));
+      if (d < bestDist) { bestDist = d; best = t.index; }
+    }
+    return best; // between words → nearest
   }
 
   _bindEngine() {
@@ -227,6 +320,7 @@ class ReadAlong extends HTMLElement {
       this._state = "playing";
       this._engine.resume();
       this._setPlayingUi(true);
+      this._emitEvent("play"); // resumed
       return;
     }
     if (this._state === "playing") return;
@@ -237,6 +331,7 @@ class ReadAlong extends HTMLElement {
     this._engine.speak(this._chunks);
     this._setPlayingUi(true);
     this._announce("Playing, automated voice");
+    this._emitEvent("play");
   }
 
   _pause() {
@@ -245,6 +340,7 @@ class ReadAlong extends HTMLElement {
     this._engine.pause();
     this._setPlayingUi(false);
     this._announce("Paused");
+    this._emitEvent("pause");
   }
 
   _stop() {
@@ -256,6 +352,7 @@ class ReadAlong extends HTMLElement {
     this._highlighter?.clear();
     this._setPlayingUi(false);
     this._setStatus("Ready");
+    this._emitEvent("stop");
   }
 
   _finish() {
@@ -265,6 +362,12 @@ class ReadAlong extends HTMLElement {
     this._setPlayingUi(false);
     this._setStatus("Done");
     this._announce("Finished reading");
+    this._emitEvent("done");
+  }
+
+  /** Hosts (e.g. an external-clock bridge) listen to these to stay in sync. */
+  _emitEvent(name) {
+    this.dispatchEvent(new CustomEvent(name, { bubbles: true, detail: { token: this._engine?.position } }));
   }
 
   // -- UI helpers ----------------------------------------------------------

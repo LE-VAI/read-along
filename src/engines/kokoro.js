@@ -34,7 +34,9 @@
 
 import { KokoroTTS, TextSplitterStream } from "kokoro-js";
 
-const TRAILING_SIL_MS = 250; // acoustic buffer so the last word isn't clipped
+const TRAILING_SIL_MS = 250;
+
+import { locateTokenChunk } from "./webspeech.js"; // acoustic buffer so the last word isn't clipped
 
 export class KokoroEngine {
   /**
@@ -107,10 +109,21 @@ export class KokoroEngine {
     }
   }
 
-  async speak(chunks, startChunk = 0) {
+  async speak(chunks, startWord = 0) {
     this._chunks = chunks || this._chunks;
     this._stopped = false;
     this._paused = false;
+    let startChunk = 0;
+    let startOffsetMs = 0;
+    if (startWord > 0) {
+      const ci = locateTokenChunk(this._chunks, startWord);
+      if (ci >= 0) {
+        startChunk = ci;
+        this._seekWord = startWord; // _playBuffer computes the sample offset
+      }
+    } else {
+      this._seekWord = null;
+    }
     try {
       await this.load();
     } catch {
@@ -182,7 +195,8 @@ export class KokoroEngine {
 
   /**
    * Schedule the chunk's audio on the AudioContext timeline and drive word
-   * tokens from the sample clock.
+   * tokens from the sample clock. A pending `_seekWord` starts playback at
+   * that word's sample offset (mid-chunk seek) and is consumed once.
    */
   _playBuffer(audio, chunkIdx, chunk) {
     const ctx = this._ensureCtx();
@@ -199,13 +213,26 @@ export class KokoroEngine {
     this._chunkIdx = chunkIdx;
     this._tokenIndex = -1;
     this._timings = wordTimingsFromChunk(chunk, audio);
-    this._startTime = ctx.currentTime;
+
+    // Word-level seek: start the source at the word's sample position. The
+    // trimmed leading audio shifts every word's timing by the same offset,
+    // so the sample clock stays the single source of truth.
+    let offsetMs = 0;
+    if (this._seekWord != null) {
+      const hit = this._timings.find((w) => w.tokenIndex === this._seekWord);
+      if (hit) offsetMs = hit.startMs;
+      this._seekWord = null;
+    }
+    const offsetSec = Math.min(offsetMs / 1000, Math.max(0, buffer.duration - 0.05));
+
+    this._startTime = ctx.currentTime - offsetSec; // pos math stays uniform
     src.onended = () => {
       if (this._stopped || this._src !== src) return;
       this.onChunkEnd?.(chunkIdx, chunk);
       this._playChunk(chunkIdx + 1);
     };
-    src.start(0);
+    src.start(0, offsetSec);
+    this._advanceTo(offsetMs); // show the seeked word immediately
     this._startPoll();
   }
 
