@@ -38,12 +38,12 @@
   "author": "Le Vain Bey",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xcapselx/read-along.git"
+    "url": "git+https://github.com/LE-VAI/read-along.git"
   },
   "bugs": {
-    "url": "https://github.com/xcapselx/read-along/issues"
+    "url": "https://github.com/LE-VAI/read-along/issues"
   },
-  "homepage": "https://github.com/xcapselx/read-along#readme",
+  "homepage": "https://github.com/LE-VAI/read-along#readme",
   "engines": {
     "node": ">=18"
   },
