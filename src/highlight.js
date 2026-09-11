@@ -126,6 +126,12 @@ export class Highlighter {
         hl.add(r);
         this._wordRanges.push(r);
       }
+      // Track the active token on the NATIVE path too. Only the fallback
+      // path maintained _markIndex, so `activeToken` read the -2 sentinel in
+      // every browser that supports the Highlight API — it was always wrong
+      // exactly where it worked best. Any host that reads the reading
+      // position (eye-gaze, a BCI bridge, a progress bar) got nothing.
+      this._markIndex = r ? i : -2;
     } else {
       this._fallbackMark(i);
     }
@@ -154,6 +160,10 @@ export class Highlighter {
       this._sentenceRanges.length = 0;
     }
     this._unwrapMark();
+    // _unwrapMark only resets the index when a fallback <mark> existed, so
+    // the native path needs its own reset or a cleared player keeps claiming
+    // an active word.
+    this._markIndex = -2;
   }
 
   destroy() {

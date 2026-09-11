@@ -110,3 +110,35 @@ test("offsets survive inline markup (em around a word)", () => {
     ["A", "bold", "word."]
   );
 });
+
+test('the NATIVE highlight path tracks the active token index', async () => {
+  // Regression: setActive() maintained _markIndex only on the fallback path,
+  // so `activeToken` read the -2 sentinel in every browser with the Highlight
+  // API — the component could not report what it was currently reading.
+  const { Highlighter } = await import('../src/highlight.js');
+
+  const fakeRange = (id) => ({ id });
+  const root = {
+    querySelectorAll: () => [],
+    ownerDocument: null,
+  };
+  const ranges = new Map([[0, fakeRange(0)], [1, fakeRange(1)]]);
+
+  const h = new Highlighter(root);
+  // Force the native path with a minimal registry stand-in.
+  const added = new Set();
+  Object.defineProperty(h, 'native', { value: true, configurable: true });
+  h._wordEntry = { highlight: { add: (r) => added.add(r), delete: (r) => added.delete(r) } };
+  h._sentenceEntry = { highlight: { add() {}, delete() {} } };
+  h._wordRanges = [];
+  h._sentenceRanges = [];
+  h.tokenRanges = ranges;
+  h._markIndex = -2;
+
+  h.setActive(1);
+  assert.equal(h._markIndex, 1, 'the native path must record the active token');
+  assert.ok(added.has(ranges.get(1)), 'and still paint it');
+
+  h.clear();
+  assert.equal(h._markIndex, -2, 'clear() resets the index on the native path too');
+});
