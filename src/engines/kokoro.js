@@ -27,7 +27,7 @@
  * with it through the same 4-method engine contract as everything else.
  *
  * Usage:
- *   import { KokoroEngine } from "read-along/engines/kokoro.js";
+ *   import { KokoroEngine } from "@designesy/read-along/engines/kokoro.js";
  *   const engine = new KokoroEngine({ voice: "af_heart" });
  *   el.engine = engine;   // set BEFORE first play; loads model on first play
  */

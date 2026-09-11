@@ -83,10 +83,10 @@ Everything else in the space is commercial.
 - **Accessible controls.** Real buttons, `aria-pressed`, visible focus,
   polite live announcements, keyboard operable end to end.
 
-## Install (once published)
+## Install
 
 ```bash
-npm install read-along
+npm install @designesy/read-along
 ```
 
 or vendor the files — it's dependency-free ES modules.
@@ -150,7 +150,7 @@ non-browser speech systems:
 - **build-time timings with no audio at all** — silent visual karaoke
 
 ```js
-import { ExternalEngine } from "read-along/engines/external.js";
+import { ExternalEngine } from "@designesy/read-along/engines/external.js";
 const engine = new ExternalEngine({ words: [] }); // [tokenIndex, startMs, endMs]
 el.engine = engine;
 el.play();
@@ -177,7 +177,7 @@ entirely in the browser — real voices on any tab, including embedded
 browsers whose Web Speech has none.
 
 ```js
-import { KokoroEngine } from "read-along/engines/kokoro.js"; // (or vendor the file)
+import { KokoroEngine } from "@designesy/read-along/engines/kokoro.js"; // (or vendor the file)
 const engine = new KokoroEngine({ voice: "af_heart" }); // af_bella, am_michael, …
 await engine.load();          // optional: preload the ~80 MB model (q8)
 el.engine = engine;           // else it loads on first play
