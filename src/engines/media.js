@@ -42,6 +42,7 @@ export class MediaEngine {
     this._chunkIdx = -1;
     this._stopped = true;
     this._paused = false;
+    this._lastToken = -1;
   }
 
   setChunks(chunks) { this._chunks = chunks || []; }
@@ -71,6 +72,7 @@ export class MediaEngine {
     const entry = this.manifest.chunks[i];
     if (!entry) { this.onEnd?.(); return; }
     this._chunkIdx = i;
+    this._lastToken = -1; // each chunk restarts the word pointer
 
     if (!this._audio) {
       this._audio = new Audio();
@@ -108,7 +110,8 @@ export class MediaEngine {
     if (this._stopped || !this._audio) return;
     const t = this._audio.currentTime * 1000;
     // Last word whose startMs has been reached (timings must be sorted).
-    const words = entry.words;
+    const words = entry?.words;
+    if (!words) return; // manifest chunk without timings — highlight off
     let idx = -1;
     for (let k = 0; k < words.length; k++) {
       if (words[k][1] <= t) idx = words[k][0];

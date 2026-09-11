@@ -6,6 +6,7 @@
   "main": "src/read-along.js",
   "exports": {
     ".": "./src/read-along.js",
+    "./timings.js": "./src/timings.js",
     "./engines/webspeech.js": "./src/engines/webspeech.js",
     "./engines/media.js": "./src/engines/media.js",
     "./engines/kokoro.js": "./src/engines/kokoro.js",
@@ -16,6 +17,9 @@
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "node --test tests/tokenizer.test.mjs tests/webspeech.test.mjs tests/external.test.mjs tests/media.test.mjs tests/highlight.test.mjs tests/kokoro.test.mjs"
+  },
   "keywords": [
     "read-along",
     "read-aloud",
@@ -32,6 +36,14 @@
   ],
   "license": "MIT",
   "author": "Le Vain Bey",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xcapselx/read-along.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xcapselx/read-along/issues"
+  },
+  "homepage": "https://github.com/xcapselx/read-along#readme",
   "engines": {
     "node": ">=18"
   }

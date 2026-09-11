@@ -37,6 +37,7 @@ import { KokoroTTS, TextSplitterStream } from "kokoro-js";
 const TRAILING_SIL_MS = 250;
 
 import { locateTokenChunk } from "./webspeech.js"; // acoustic buffer so the last word isn't clipped
+import { wordTimingsFromChunk } from "../timings.js";
 
 export class KokoroEngine {
   /**
@@ -324,26 +325,9 @@ export class KokoroEngine {
   }
 }
 
-/**
- * Word timings from a chunk's real audio duration, distributed by char
- * count and merged into the chunk's tokens (global token indexes).
- * Returns [{tokenIndex, startMs, endMs}, ...] sorted by startMs.
- */
-export function wordTimingsFromChunk(chunk, audio) {
-  const chars = chunk.tokens.map((t) => t.text).join(" ");
-  if (!chars.length) return [];
-  const durMs = (audio.samples.length / audio.sampleRate) * 1000;
-  const charMs = durMs / chars.length;
-  const words = [];
-  let acc = 0; // chars consumed so far (including joining spaces)
-  for (const tok of chunk.tokens) {
-    const startMs = acc * charMs;
-    acc += tok.text.length + 1; // +1 for the joining space
-    const endMs = (acc - 1) * charMs;
-    words.push({ tokenIndex: tok.index, startMs, endMs });
-  }
-  return words;
-}
+// wordTimingsFromChunk moved to ../timings.js so hosts can build
+// MediaEngine/ExternalEngine manifests from kokoro output without
+// importing this module (kokoro-js is an optional peer dep).
 
 function concatFloat32(a, b) {
   if (!b.length) return a;
