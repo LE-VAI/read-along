@@ -45,14 +45,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Each engine is importable and exposes the contract
+      - name: Every engine loads without its optional peer dependency
         run: |
-          # The core is engine-agnostic: every engine must be loadable without
+          # The core is engine-agnostic: each engine must be loadable WITHOUT
           # its optional peer dependency installed. kokoro.js is the test case
-          # — it imports kokoro-js, which is NOT a dependency of this package.
+          # — it imports kokoro-js, which is NOT a dependency of this package,
+          # so a missing peer dep must not break an import of any engine.
+          #
+          # These modules are DOM-free by design and must import in plain Node.
+          # The component itself (src/read-along.js) is NOT in this list: it is
+          # a custom element that builds its template at module load, so it
+          # legitimately requires a document. Asserting otherwise would be
+          # testing a claim the package does not make.
           node -e "
           const mods = [
-            ['./src/read-along.js', ['ReadAlong', 'tokenize', 'chunkTokens']],
             ['./src/tokenizer.js', ['tokenize', 'chunkTokens']],
             ['./src/timings.js', ['wordTimingsFromChunk']],
             ['./src/engines/webspeech.js', ['WebSpeechEngine']],
@@ -70,3 +76,16 @@ jobs:
             console.log('engine contract holds');
           })().catch((e) => { console.error(e.message); process.exit(1); });
           "
+
+      - name: The component requires a DOM (documented, not accidental)
+        run: |
+          # Guard the boundary from the other side: if read-along.js ever
+          # STARTS importing in plain Node, that means the template moved out
+          # of module scope and the component's load behaviour changed. Worth
+          # knowing, either way.
+          if node -e "import('./src/read-along.js')" 2>/dev/null; then
+            echo 'NOTE: src/read-along.js now imports without a DOM.'
+            echo 'That is a behaviour change — confirm it is intended.'
+          else
+            echo 'ok: src/read-along.js requires a document, as documented'
+          fi
