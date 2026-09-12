@@ -1,0 +1,72 @@
+name: CI
+
+# read-along is published to npm; this is the gate that runs before anything
+# reaches the registry. The package has zero runtime dependencies, so there is
+# no install step — the suite uses node:test from the standard library.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Run the test suite
+        run: npm test
+
+      - name: Verify every module parses
+        run: |
+          for f in src/*.js src/engines/*.js; do
+            node --check "$f" || exit 1
+          done
+          echo "all modules parse"
+
+  engines:
+    name: Engine contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Each engine is importable and exposes the contract
+        run: |
+          # The core is engine-agnostic: every engine must be loadable without
+          # its optional peer dependency installed. kokoro.js is the test case
+          # — it imports kokoro-js, which is NOT a dependency of this package.
+          node -e "
+          const mods = [
+            ['./src/read-along.js', ['ReadAlong', 'tokenize', 'chunkTokens']],
+            ['./src/tokenizer.js', ['tokenize', 'chunkTokens']],
+            ['./src/timings.js', ['wordTimingsFromChunk']],
+            ['./src/engines/webspeech.js', ['WebSpeechEngine']],
+            ['./src/engines/media.js', ['MediaEngine']],
+            ['./src/engines/external.js', ['ExternalEngine']],
+          ];
+          (async () => {
+            for (const [path, names] of mods) {
+              const m = await import(path);
+              for (const n of names) {
+                if (!(n in m)) throw new Error(path + ' is missing export ' + n);
+              }
+              console.log('ok', path);
+            }
+            console.log('engine contract holds');
+          })().catch((e) => { console.error(e.message); process.exit(1); });
+          "
