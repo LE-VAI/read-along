@@ -26,7 +26,10 @@ const CHARS_PER_SEC = 14.5; // ~150 wpm × ~5.8 chars/word, heuristic at rate 1
 
 export class WebSpeechEngine {
   constructor(options = {}) {
-    this.lang = options.lang ?? navigator.language ?? "en-US";
+    // navigator is NOT a global on Node < 21, and this engine must be
+    // constructible outside a browser (the component imports it
+    // unconditionally). Read it defensively rather than assuming a DOM.
+    this.lang = options.lang ?? (typeof navigator !== "undefined" ? navigator.language : null) ?? "en-US";
     this.rate = options.rate ?? 1;
     this.pitch = options.pitch ?? 1;
     this.voiceName = options.voiceName ?? null;
@@ -341,7 +344,8 @@ export class WebSpeechEngine {
     // Desktop-Chrome-only belt-and-suspenders for the ~15s watchdog
     // (chromium:41294170). On Android, pause()/resume() mid-utterance
     // breaks synthesis entirely — sentence chunking alone is the fix there.
-    if (/Android/i.test(navigator.userAgent)) return;
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+    if (/Android/i.test(ua)) return;
     this._keepalive = setInterval(() => {
       if (this._stopped || this._paused || this._visualOnly) return;
       if (speechSynthesis.speaking && !speechSynthesis.paused) {
