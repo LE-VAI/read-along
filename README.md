@@ -48,7 +48,11 @@ Everything else in the space is commercial.
 
 ## Features
 
-- **Zero dependencies**, ~5 kB unminified, MIT license.
+- **Zero dependencies**, MIT license. The core import chain
+  (`read-along.js` + `tokenizer.js` + `highlight.js` + `engines/webspeech.js`)
+  measures **~12.1 kB gzipped** (38.5 kB raw). Measure for yourself with a
+  bundler analyser rather than trusting a number in a README — including this
+  one, which previously said "~5 kB" and was simply wrong.
 - **Markup-safe highlighting** via the CSS Custom Highlight API (`Highlight`
   + `::highlight()`), with a graceful `<mark>` fallback. Your content's DOM
   is never re-wrapped on the modern path.
@@ -244,10 +248,35 @@ Honest notes:
 
 ## Status
 
-v0 — core engine, highlight layer, four engines (Web Speech, media,
+**Published.** `@designesy/read-along@0.1.3` on npm, MIT, 45 tests, CI green on
+Node 18/20/22. Core engine, highlight layer, four engines (Web Speech, media,
 Kokoro, external clock), word-level seek + click-to-seek, CSS-var theming,
-demo. Roadmap: formal test suite, npm publish, desktop-overlay reference
-integration. Not yet production-hardened; verify on your target browsers.
+live demos.
+
+### Integrating it into a server-rendered app — read this first
+
+**The module cannot be imported in any server context.** It builds its template
+and calls `customElements.define()` at module top level, so a static import in
+a Node/prerender environment throws `ReferenceError: document is not defined`.
+Verified. This means:
+
+- **Client Components are still prerendered on the server**, so a *static*
+  import inside a `'use client'` file fails at build time too.
+- Register it with a **dynamic `import()` inside `useEffect`**, or
+  `next/dynamic` with `ssr: false` — and `ssr: false` only works inside a
+  Client Component.
+- Render the **tag and its children** server-side; never the module. The
+  children are plain HTML and read fine before upgrade, so progressive
+  enhancement works by construction.
+
+**The stylesheet is opt-in and separate.** `src/read-along.css` carries the
+`::highlight()` rules and must be linked (or imported) by the page. Without it
+the karaoke highlight paints nothing, silently — there is no error, because the
+component injects no styles itself and therefore cannot notice their absence.
+
+**Add `read-along { display: block }` in your own CSS.** The element is
+inline-level before upgrade and `display: block` after, so without this the
+player's appearance shifts layout.
 
 ## License
 
