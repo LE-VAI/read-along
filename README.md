@@ -248,7 +248,7 @@ Honest notes:
 
 ## Status
 
-**Published.** `@designesy/read-along@0.1.3` on npm, MIT, 45 tests, CI green on
+**Published.** `@designesy/read-along@0.1.4` on npm, MIT, 45 tests, CI green on
 Node 18/20/22. Core engine, highlight layer, four engines (Web Speech, media,
 Kokoro, external clock), word-level seek + click-to-seek, CSS-var theming,
 live demos.
@@ -273,6 +273,23 @@ Verified. This means:
 `::highlight()` rules and must be linked (or imported) by the page. Without it
 the karaoke highlight paints nothing, silently — there is no error, because the
 component injects no styles itself and therefore cannot notice their absence.
+
+Import it by its **published specifier**, not by the path inside the package:
+
+```js
+import "@designesy/read-along/read-along.css";
+```
+
+**Do not write `@designesy/read-along/src/read-along.css`.** This package uses an
+`exports` map, which gates every subpath: a path not listed there is unimportable
+even though the file ships in the tarball. Until 0.1.4 the map listed only the JS
+entry points, so the CSS was published but **unreachable** — `require.resolve`
+returned `ERR_PACKAGE_PATH_NOT_EXPORTED`, and an integration written against the
+path failed at resolver time while looking correct. On 0.1.3 or earlier, upgrade
+or copy the file into your own tree.
+
+`scripts/audit-exports.py` guards that class of defect: it compares the `files`
+list against the `exports` map and reports anything shipped but unimportable.
 
 **Add `read-along { display: block }` in your own CSS.** The element is
 inline-level before upgrade and `display: block` after, so without this the
