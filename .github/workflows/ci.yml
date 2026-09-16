@@ -37,6 +37,25 @@ jobs:
           done
           echo "all modules parse"
 
+  package:
+    name: Package surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Every shipped file is importable
+        # A file present in `files` but absent from `exports` is published yet
+        # unreachable — an integrator following the docs hits
+        # ERR_PACKAGE_PATH_NOT_EXPORTED. This happened THREE times across this
+        # project's packages in a single day (the stylesheet, neural-consent's
+        # consent.js, and this package's own styles.js), each time by writing
+        # code that a consumer could not import. Vigilance is not the fix; a
+        # gate is.
+        run: python3 scripts/audit-exports.py
+
   engines:
     name: Engine contract
     runs-on: ubuntu-latest

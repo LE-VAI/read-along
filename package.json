@@ -14,7 +14,8 @@
     "./engines/webspeech.js": "./src/engines/webspeech.js",
     "./engines/media.js": "./src/engines/media.js",
     "./engines/kokoro.js": "./src/engines/kokoro.js",
-    "./engines/external.js": "./src/engines/external.js"
+    "./engines/external.js": "./src/engines/external.js",
+    "./styles.js": "./src/styles.js"
   },
   "files": [
     "src",
