@@ -115,9 +115,12 @@ coexist correctly (each contributes and removes only the Ranges it owns).
 - `activeToken` — index of the word currently spoken (-1 when idle)
 - `engine` property — swap in your own engine before first play
 - `state` — `"idle" | "playing" | "paused"`
-- events: `play` / `pause` / `stop` / `done` / `seek` (bubbles; `detail.token`
-  carries the engine's position) — hosts driving an external clock use these
-  to anchor their own timers
+- events: `play` / `pause` / `stop` / `done` / `seek` (bubbles). `detail.token`
+  is **always a word index, whichever engine is in use** — the component
+  normalises it, because the engines do not agree on what `position` returns
+  (`ExternalEngine` gives a bare number, the others give `{ chunk, token }`).
+  `detail.position` carries the engine's own value unchanged if you want it.
+  Hosts driving an external clock use these to anchor their own timers.
 
 ## Custom engines
 

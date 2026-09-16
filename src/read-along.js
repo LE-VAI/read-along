@@ -25,6 +25,7 @@ import {
   supportsHighlightAPI,
 } from "./highlight.js";
 import { WebSpeechEngine } from "./engines/webspeech.js";
+import { injectHighlightStyles, hasHighlightStyles } from "./styles.js";
 
 const template = document.createElement("template");
 template.innerHTML = `
@@ -97,6 +98,31 @@ class ReadAlong extends HTMLElement {
   }
 
   connectedCallback() {
+    /**
+     * Adopt the highlight stylesheet.
+     *
+     * This is not optional, and the failure mode when it is missing is silent
+     * in the worst way: the Ranges register, the component plays, the words are
+     * spoken, and NOTHING IS EVER HIGHLIGHTED. Verified in a browser before
+     * this was added — activeToken 5, one Range registered, zero ::highlight
+     * rules in the document.
+     *
+     * A host may suppress injection with `no-inject-styles` (strict CSP, or a
+     * page that loads the published stylesheet itself). In that case the
+     * stylesheet's presence is still CHECKED, and if it is absent the component
+     * says so rather than looking broken for no visible reason.
+     */
+    if (!this.hasAttribute("no-inject-styles")) {
+      injectHighlightStyles(this.ownerDocument);
+    }
+    if (!hasHighlightStyles(this.ownerDocument)) {
+      this._setStatus?.("Stylesheet missing — see read-along.css");
+      this._announce?.(
+        "The highlight stylesheet is not loaded, so words will not light up. " +
+        "Add read-along.css to the page."
+      );
+    }
+
     if (this._prepared && this._highlighter?.destroyed) {
       // Re-connected after disconnect destroyed the highlighter — rebuild
       // it and re-map token ranges (the DOM may have changed too).
@@ -153,9 +179,15 @@ class ReadAlong extends HTMLElement {
   /** Index of the word currently being spoken (-1 when idle). */
   get activeToken() { return this._highlighter ? this._highlighter._markIndex : -1; }
 
-  static get observedAttributes() { return ["lang", "rate", "seekable"]; }
+  static get observedAttributes() { return ["lang", "rate", "seekable", "no-inject-styles"]; }
 
   attributeChangedCallback(name, _old, value) {
+    // no-inject-styles changes whether the rules were adopted, so it must be
+    // honoured even before an engine exists.
+    if (name === "no-inject-styles") {
+      if (value === null) injectHighlightStyles(this.ownerDocument);
+      return;
+    }
     if (!this._engine) return;
     if (name === "lang") this._engine.lang = value;
     if (name === "rate") this._engine.rate = parseFloat(value) || 1;
@@ -365,9 +397,28 @@ class ReadAlong extends HTMLElement {
     this._emitEvent("done");
   }
 
-  /** Hosts (e.g. an external-clock bridge) listen to these to stay in sync. */
+  /**
+   * Hosts (e.g. an external-clock bridge) listen to these to stay in sync.
+   *
+   * `detail.token` is ALWAYS the word index, whichever engine is in use.
+   *
+   * The engines do not agree on what `position` returns: ExternalEngine returns
+   * a bare number (it only tracks a word), while WebSpeech, Media and Kokoro
+   * return `{ chunk, token }`. Emitting that value directly — which this did —
+   * meant a host reading `detail.token` got a number from one engine and an
+   * object from the other three. Found by writing the type definitions, which
+   * could not describe both shapes under one property.
+   *
+   * The component owns its event contract, so it normalises here rather than
+   * making every host branch on the engine. `detail.position` carries the
+   * engine's own value unchanged, for a host that wants the extra detail.
+   */
   _emitEvent(name) {
-    this.dispatchEvent(new CustomEvent(name, { bubbles: true, detail: { token: this._engine?.position } }));
+    const pos = this._engine?.position;
+    const token = typeof pos === 'number' ? pos : (pos?.token ?? -1);
+    this.dispatchEvent(
+      new CustomEvent(name, { bubbles: true, detail: { token, position: pos } })
+    );
   }
 
   // -- UI helpers ----------------------------------------------------------

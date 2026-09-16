@@ -5,7 +5,10 @@
   "type": "module",
   "main": "src/read-along.js",
   "exports": {
-    ".": "./src/read-along.js",
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/read-along.js"
+    },
     "./read-along.css": "./src/read-along.css",
     "./timings.js": "./src/timings.js",
     "./engines/webspeech.js": "./src/engines/webspeech.js",
@@ -50,5 +53,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "types": "./src/index.d.ts"
 }
