@@ -432,7 +432,29 @@ class ReadAlong extends HTMLElement {
 
   _setStatus(msg) { this._els.status.textContent = msg; }
 
-  _announce(msg) { this._els.live.textContent = msg; }
+  /**
+   * Announce a status message to assistive technology.
+   *
+   * The clear-then-set is not belt-and-braces, it is the whole mechanism. A
+   * live region announces a CHANGE, and assigning an identical string produces
+   * no DOM mutation — so `live.textContent = "Paused"` twice announces nothing
+   * the second time. That is reachable in ordinary use: a pause/resume cycle
+   * repeats "Paused", and seeking to the same word repeats "Playing from word
+   * N". The second one is silent for no reason a user could detect.
+   *
+   * Clearing first guarantees a mutation. The clear and the set happen in the
+   * same task, so the region settles on the new string and an AT user hears one
+   * message rather than an empty one followed by a real one.
+   */
+  _announce(msg) {
+    const live = this._els.live;
+    if (live.textContent === msg) {
+      // Same string: force a mutation so the region actually fires.
+      live.textContent = '';
+      void live.offsetHeight; // flush the clear so it is observed
+    }
+    live.textContent = msg;
+  }
 }
 
 if (!customElements.get("read-along")) {
