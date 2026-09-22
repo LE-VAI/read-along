@@ -33,8 +33,23 @@ EXPECTED_UNREACHABLE = {"LICENSE", "README.md", "package.json"}
 
 # Internal modules are legitimately unreachable: nothing should import them
 # directly, and exposing them would freeze implementation details as API.
+# Genuinely private: implementation detail a host has no reason to reach.
+#
+# THIS LIST WAS WRONG IN A WAY THAT MATTERED. It excused `tokenizer.js` and
+# `timings.js` as "internal", but the README documents tokenizer.js as "the
+# engine contract and token/chunk formats" and timings.js was already exported —
+# so the list was excusing a real gap, and a host building the external-clock
+# integration could not import the module that derives its own timings. That is
+# the same defect this script exists to find, one level up: an instrument whose
+# internal notion of "fine" had drifted from the packaged reality.
+#
+# The rule now: anything documented as a host contract is NOT internal, and
+# this list holds only modules that are neither exported nor documented.
+INTERNAL_MODULES = {"highlight.js"}
+
+
 def is_internal(path: str) -> bool:
-    return path.startswith("src/engines/") or path.endswith(("tokenizer.js", "highlight.js", "timings.js", "dwell.js", "sources.js", "words.js", "analog.js", "transports.js"))
+    return path.rsplit("/", 1)[-1] in INTERNAL_MODULES
 
 
 def unprefix(value: str) -> str:

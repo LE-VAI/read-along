@@ -1,6 +1,6 @@
 {
   "name": "@designesy/read-along",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Embeddable bimodal read-along web component: karaoke-sync word highlighting with pluggable TTS engines (Web Speech, pre-synthesized audio, or your own).",
   "type": "module",
   "main": "src/read-along.js",
@@ -15,7 +15,8 @@
     "./engines/media.js": "./src/engines/media.js",
     "./engines/kokoro.js": "./src/engines/kokoro.js",
     "./engines/external.js": "./src/engines/external.js",
-    "./styles.js": "./src/styles.js"
+    "./styles.js": "./src/styles.js",
+    "./tokenizer.js": "./src/tokenizer.js"
   },
   "files": [
     "src",
