@@ -10,7 +10,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { wordTimingsFromChunk } from "../src/timings.js";
+import { wordTimingsFromChunk, toEngineManifest } from "../src/timings.js";
+import { ExternalEngine } from "../src/engines/external.js";
 import { tokenize } from "../src/tokenizer.js";
 
 test("timings tile the chunk duration in order with no gaps", () => {
@@ -73,4 +74,66 @@ test("longer word gets a longer slice than a short one", () => {
   const a = out[0].endMs - out[0].startMs;
   const b = out[1].endMs - out[1].startMs;
   assert.ok(a > b * 2, `short word slice should be much smaller: ${a} vs ${b}`);
+});
+// -- the seam to the ENGINES, which nothing previously crossed ---------------
+
+test('CRITICAL: wordTimingsFromChunk output can actually feed ExternalEngine', () => {
+  // The header of timings.js promised it existed "so hosts can build
+  // MediaEngine/ExternalEngine manifests" — and it handed them objects while
+  // both engines require tuples. A host following that sentence crashed at
+  // `words.find(([tok]) => ...)` with "object is not iterable".
+  //
+  // Nothing caught it because the only in-package consumer is kokoro.js, which
+  // reads named fields. The seam was never crossed by a test or a demo. This
+  // test crosses it, so the promise in the header is enforced.
+  const toks = tokenize('one two three four five').map((t, i) => ({ ...t, index: i }));
+  const chunk = { tokens: toks };
+  const sampleRate = 24000;
+  const out = wordTimingsFromChunk(chunk, {
+    samples: Float32Array.from({ length: sampleRate * 2 }),
+    sampleRate,
+  });
+
+  const manifest = toEngineManifest(out);
+
+  // Shape: tuples, not objects.
+  assert.ok(Array.isArray(manifest[0]), 'the manifest must be tuples');
+  assert.equal(manifest[0].length, 3);
+  assert.equal(typeof manifest[0][0], 'number', 'tokenIndex');
+
+  // It must be sortable and iterable by the engine's own access pattern.
+  for (const [tok, startMs, endMs] of manifest) {
+    assert.equal(typeof tok, 'number');
+    assert.ok(startMs <= endMs);
+  }
+
+  // And the engine must accept it without throwing.
+  const engine = new ExternalEngine({ words: manifest });
+  assert.equal(engine.words.length, toks.length, 'the engine took the manifest');
+  // The engine sorts by index 1 on construction — verify it survived that.
+  assert.deepEqual(engine.words[0].slice(0, 2), manifest[0].slice(0, 2));
+});
+
+test('toEngineManifest is idempotent on tuples and sorts by start time', () => {
+  // A host may already hold tuples (a media manifest from JSON, a Piper bridge
+  // output). Passing those through must be a copy, not a corruption.
+  const tuples = [[2, 400, 500], [0, 0, 100], [1, 200, 300]];
+  const out = toEngineManifest(tuples);
+  assert.deepEqual(out, [[0, 0, 100], [1, 200, 300], [2, 400, 500]],
+    'tuples pass through and are sorted by startMs');
+
+  // Unsorted input is the dangerous case: MediaEngine walks the array assuming
+  // ascending time, so an unsorted manifest reports the WRONG WORD rather than
+  // failing. Sorting here is what makes that impossible rather than unlikely.
+  const objects = [
+    { tokenIndex: 1, startMs: 200, endMs: 300 },
+    { tokenIndex: 0, startMs: 0, endMs: 100 },
+  ];
+  assert.deepEqual(toEngineManifest(objects), [[0, 0, 100], [1, 200, 300]]);
+});
+
+test('toEngineManifest tolerates nonsense rather than throwing', () => {
+  assert.deepEqual(toEngineManifest(null), []);
+  assert.deepEqual(toEngineManifest(undefined), []);
+  assert.deepEqual(toEngineManifest('not an array'), []);
 });
