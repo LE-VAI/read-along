@@ -251,10 +251,18 @@ Honest notes:
 
 ## Status
 
-**Published.** `@designesy/read-along@0.1.4` on npm, MIT, 45 tests, CI green on
+**Published.** `@designesy/read-along@0.2.1` on npm, MIT, 45 tests, CI green on
 Node 18/20/22. Core engine, highlight layer, four engines (Web Speech, media,
 Kokoro, external clock), word-level seek + click-to-seek, CSS-var theming,
 live demos.
+
+**Screen-reader verified.** The live region is confirmed announced under a real
+screen reader, including the repeated-identical-message case: NVDA 2026.2 with
+Chromium 153 on Windows 11, 2026-09-22, all six checks passed. See
+`docs/AT-TEST-RESULT.md` for the environment and the exact method. That file
+also records what the result does *not* imply — JAWS, Narrator, and VoiceOver
+are untested, and the shadow root is the part most likely to differ between
+implementations.
 
 ### Integrating it into a server-rendered app — read this first
 
@@ -272,12 +280,18 @@ Verified. This means:
   children are plain HTML and read fine before upgrade, so progressive
   enhancement works by construction.
 
-**The stylesheet is opt-in and separate.** `src/read-along.css` carries the
-`::highlight()` rules and must be linked (or imported) by the page. Without it
-the karaoke highlight paints nothing, silently — there is no error, because the
-component injects no styles itself and therefore cannot notice their absence.
+**The highlight styles.** As of 0.2.0 the component self-injects the
+`::highlight()` rules on connect — a constructable stylesheet where available,
+a `<style>` element otherwise — and the injection is idempotent when the host
+links them too. Set `no-inject-styles` on the element to opt out.
 
-Import it by its **published specifier**, not by the path inside the package:
+**Before 0.2.0 that was a silent failure, and it is worth knowing why the
+injection exists.** The stylesheet was opt-in and separate: a host that imported
+the module without also linking the CSS got a component that worked, painted
+nothing, and reported no error — because the component injected no styles and
+therefore could not notice their absence. That is fixed. The **explicit import
+is still the supported way to theme it**, because that is the file which reads
+your `--ra-highlight` / `--ra-accent` custom properties:
 
 ```js
 import "@designesy/read-along/read-along.css";
