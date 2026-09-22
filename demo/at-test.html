@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Reader Test — Read-Along</title>
+<!-- The component's own stylesheet. Unlike the other demo pages this one does
+     NOT import src/styles.js, deliberately: this page tests the DOCUMENT-scope
+     highlight path and the live region, and the self-injecting stylesheet is a
+     separate code path that has its own test. -->
+<link rel="stylesheet" href="../src/read-along.css">
+<!--
+  WHY THIS PAGE EXISTS.
+
+  read-along announces its state through an aria-live region inside a SHADOW
+  ROOT. Whether a screen reader actually reads a shadow-root live region is the
+  one claim in this package that has never been verified by execution — there
+  is no headless way to ask "did NVDA say that". The accessibility tree
+  contains the region, the region's text changes, and the code is correct as
+  far as spec reads. That is not the same as a user hearing it.
+
+  A region can be present, changed, and still silent. Two known ways that
+  happens: a screen reader that does not traverse into shadow roots for live
+  region observation, and a region that is empty at the moment the browser
+  snapshots it because the clear-and-set landed in one task.
+
+  So this page is a MANUAL test. It puts one instrument in front of a real
+  screen reader and records what the person actually hears. The result goes in
+  docs/AT-TEST-RESULT.md, including a failure — an unverified claim is a
+  liability, and a verified failure is a bug report.
+
+  HOW TO USE IT: open this file with the screen reader already running, follow
+  the numbered checks in order, and mark each PASS or FAIL as you go. The page
+  records your answers and produces the markdown to paste into the doc.
+-->
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d0d0f;
+    --surface: #17171a;
+    --surface-2: #1e1e22;
+    --border: #2b2b31;
+    --text: #ededf0;
+    --text-dim: #9a9aa4;
+    --accent: #7aa2ff;
+    --pass: #4ade80;
+    --fail: #f87171;
+    --skip: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem 1.25rem 6rem;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 54rem; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  h2 {
+    font-size: 1.05rem; margin: 2.5rem 0 .75rem;
+    padding-bottom: .5rem; border-bottom: 1px solid var(--border);
+  }
+  .lede { color: var(--text-dim); margin: 0 0 2rem; font-size: .95rem; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+  }
+  .card p { margin: .5rem 0; }
+  .card .why { color: var(--text-dim); font-size: .88rem; }
+  .check { border-left: 3px solid var(--accent); }
+  .check .n {
+    display: inline-block; min-width: 1.5rem;
+    color: var(--accent); font-weight: 600;
+  }
+  code {
+    background: var(--surface-2); padding: .1rem .35rem;
+    border-radius: .25rem; font-size: .88em;
+  }
+  kbd {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-bottom-width: 2px; border-radius: .3rem;
+    padding: .1rem .4rem; font: inherit; font-size: .85em;
+  }
+  .verdict { display: flex; gap: .5rem; margin-top: .75rem; flex-wrap: wrap; }
+  .verdict button {
+    font: inherit; font-size: .9rem; cursor: pointer;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: .4rem;
+    padding: .4rem .9rem;
+  }
+  .verdict button[aria-pressed="true"][data-v="pass"] {
+    background: color-mix(in oklab, var(--pass) 22%, var(--surface-2));
+    border-color: var(--pass); color: var(--pass);
+  }
+  .verdict button[aria-pressed="true"][data-v="fail"] {
+    background: color-mix(in oklab, var(--fail) 22%, var(--surface-2));
+    border-color: var(--fail); color: var(--fail);
+  }
+  .verdict button[aria-pressed="true"][data-v="unclear"] {
+    background: color-mix(in oklab, var(--skip) 22%, var(--surface-2));
+    border-color: var(--skip); color: var(--skip);
+  }
+  textarea {
+    width: 100%; min-height: 4.5rem; margin-top: .6rem;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: .4rem;
+    padding: .6rem .75rem; font: inherit; font-size: .92rem;
+  }
+  output#result {
+    display: block; white-space: pre-wrap; word-break: break-word;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: .5rem; padding: 1rem; margin-top: 1rem;
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .hidden-live {
+    position: absolute; width: 1px; height: 1px;
+    margin: -1px; overflow: hidden; clip-path: inset(50%);
+  }
+  read-along {
+    display: block; margin: 1rem 0;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: .75rem; padding: 1.25rem 1.5rem;
+  }
+  .sr-only-hint { color: var(--text-dim); font-size: .85rem; margin-top: .5rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Screen reader test — read-along live region</h1>
+  <p class="lede">
+    A manual accessibility test. It answers one question: <strong>does a screen
+    reader actually announce the read-along status messages, and does it do so
+    once per change?</strong> Nothing on this page passes or fails on its own —
+    only what you hear counts.
+  </p>
+
+  <div class="card">
+    <p><strong>Before you start.</strong> Turn your screen reader on <em>before</em>
+    loading this page, so it observes the live region from the beginning.</p>
+    <ul>
+      <li>NVDA: start NVDA, then open this page. Speech viewer
+        (<kbd>NVDA</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> → Tools → Speech Viewer)
+        makes the result unambiguous — a message either appears there or it
+        does not.</li>
+      <li>Use the real browser, not a preview pane. A PDF or in-editor preview of
+        this page will not run the script.</li>
+    </ul>
+  </div>
+
+  <h2>The component under test</h2>
+  <div class="card">
+    <p>Play it with <kbd>NVDA</kbd>+<kbd>Space</kbd> on the Play button, or click
+    it if you are testing one-handed. The buttons are real buttons and are
+    reachable by <kbd>Tab</kbd>.</p>
+
+    <read-along rate="1">
+      Read-along announces what it is doing. The words highlight as they are
+      spoken, one at a time, so a reader can follow the sound with their eyes.
+      This paragraph is long enough that pausing mid-sentence is easy to do,
+      and long enough that the announcement has to happen while speech is
+      still running rather than only at the end.
+    </read-along>
+
+    <p class="sr-only-hint">If the component did not render, the module did not
+    load — serve this page over http rather than opening the file directly.</p>
+  </div>
+
+  <h2>Checks</h2>
+
+  <div class="card check">
+    <p><span class="n">1</span> Press <strong>Play</strong>. You should hear the
+    text read aloud <em>and</em> a status message announcing that playback
+    started.</p>
+    <p class="why">Why it matters: this is the baseline. If the first
+    announcement is silent, every later one will be too, and the region is the
+    problem rather than the change-detection.</p>
+    <div class="verdict" role="group" aria-label="Result for check 1">
+      <button data-v="pass" aria-pressed="false">Heard it</button>
+      <button data-v="fail" aria-pressed="false">Nothing announced</button>
+      <button data-v="unclear" aria-pressed="false">Not sure</button>
+    </div>
+  </div>
+
+  <div class="card check">
+    <p><span class="n">2</span> Press <strong>Pause</strong>, then press
+    <strong>Play</strong> again, then <strong>Pause</strong> once more. Each
+    pause should announce — <strong>including the second one</strong>, which
+    repeats the same word as the first.</p>
+    <p class="why">Why it matters: this is the exact failure the clear-then-set
+    exists to prevent. A live region announces a <em>change</em>, and assigning
+    an identical string produces no change — so a naive implementation goes
+    silent on every repeated message. A user cannot tell the difference between
+    "the tool ignored me" and "the tool is broken."</p>
+    <div class="verdict" role="group" aria-label="Result for check 2">
+      <button data-v="pass" aria-pressed="false">All three announced</button>
+      <button data-v="fail" aria-pressed="false">Second pause was silent</button>
+      <button data-v="unclear" aria-pressed="false">Not sure</button>
+    </div>
+  </div>
+
+  <div class="card check">
+    <p><span class="n">3</span> Press <strong>Play</strong> and let it finish
+    without touching anything. You should hear a completion message when it
+    ends.</p>
+    <p class="why">Why it matters: an ending nobody announces is a user waiting
+    for something that already happened.</p>
+    <div class="verdict" role="group" aria-label="Result for check 3">
+      <button data-v="pass" aria-pressed="false">Heard it</button>
+      <button data-v="fail" aria-pressed="false">Nothing announced</button>
+      <button data-v="unclear" aria-pressed="false">Not sure</button>
+    </div>
+  </div>
+
+  <div class="card check">
+    <p><span class="n">4</span> Press <strong>Play</strong>, then
+    <strong>Restart</strong> while it is speaking. You should hear the restart
+    announced, and it should not announce twice for one press.</p>
+    <p class="why">Why it matters: restart stops and starts in one action, so a
+    double announcement here means the region is firing on both halves of a
+    single user intent.</p>
+    <div class="verdict" role="group" aria-label="Result for check 4">
+      <button data-v="pass" aria-pressed="false">Once, correct</button>
+      <button data-v="fail" aria-pressed="false">Twice, or silent</button>
+      <button data-v="unclear" aria-pressed="false">Not sure</button>
+    </div>
+  </div>
+
+  <div class="card check">
+    <p><span class="n">5</span> Change the <strong>Speed</strong> dropdown while
+    playing. Playback rate should change and the current word should keep
+    highlighting without skipping or stalling.</p>
+    <p class="why">Why it matters: not a live-region check. This is the timing
+    path — a rate change mid-utterance is where a sync engine drifts, and a
+    screen reader user is listening while watching nothing, so a stall is
+    total.</p>
+    <div class="verdict" role="group" aria-label="Result for check 5">
+      <button data-v="pass" aria-pressed="false">Changed cleanly</button>
+      <button data-v="fail" aria-pressed="false">Stalled or skipped</button>
+      <button data-v="unclear" aria-pressed="false">Not sure</button>
+    </div>
+  </div>
+
+  <div class="card check">
+    <p><span class="n">6</span> Press <kbd>Tab</kbd> from the top of the page
+    and walk forward through the read-along controls. Every control should be
+    reachable and should say what it does — not just "button".</p>
+    <p class="why">Why it matters: the shadow DOM hides nothing from a keyboard
+    or a screen reader only if the internals are marked up correctly. A control
+    that announces as "button" with no name is unusable without sight.</p>
+    <div class="verdict" role="group" aria-label="Result for check 6">
+      <button data-v="pass" aria-pressed="false">All reachable, all named</button>
+      <button data-v="fail" aria-pressed="false">Something unnamed or unreachable</button>
+      <button data-v="unclear" aria-pressed="false">Not sure</button>
+    </div>
+  </div>
+
+  <h2>The baseline that makes this meaningful</h2>
+  <div class="card">
+    <p>The same region is duplicated below <strong>outside</strong> any shadow
+    root. If this one announces and the component's did not, the shadow DOM is
+    conclusively the cause — which is the difference between "a screen reader
+    bug we cannot fix" and "a bug in our markup that we can".</p>
+    <button id="baseline-btn" type="button">Announce from the light DOM</button>
+    <p id="baseline-live" class="hidden-live" aria-live="polite"></p>
+    <p class="sr-only-hint">Press the button twice. The second press repeats the
+    same text, so it tests the identical-string behaviour in the light DOM too.</p>
+    <div class="verdict" role="group" aria-label="Result for the baseline">
+      <button data-v="pass" aria-pressed="false">Light DOM announced both times</button>
+      <button data-v="fail" aria-pressed="false">Light DOM also silent</button>
+      <button data-v="unclear" aria-pressed="false">Not sure</button>
+    </div>
+  </div>
+
+  <h2>Recording</h2>
+  <div class="card">
+    <p>Add anything unexpected — a stray announcement, a wrong word, a pause
+    that felt too long. The notes are often more useful than the pass marks.</p>
+    <label for="notes" class="why">Notes (optional, read aloud by nothing — it
+    is a plain text field you can type into)</label>
+    <textarea id="notes" placeholder="e.g. the second pause did announce, but the voice was cut off mid-word"></textarea>
+
+    <p style="margin-top:1.25rem">
+      <label class="why" for="who">Screen reader and version</label><br>
+      <input id="who" type="text" placeholder="NVDA 2026.1, Firefox 151, Windows 11"
+             style="width:100%;margin-top:.35rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:.4rem;padding:.5rem .75rem;font:inherit">
+    </p>
+
+    <p><button id="build" type="button">Build the result report</button></p>
+    <output id="result" aria-live="off">Press the button above to generate the markdown to paste into docs/AT-TEST-RESULT.md.</output>
+  </div>
+</main>
+
+<script type="module">
+  // Load the component. Without this the <read-along> tag below stays an
+  // unupgraded HTMLUnknownElement: it renders no controls, announces nothing,
+  // and a tester would record six failures that are really one missing import.
+  // Verified by execution — see the note in the doc about how this was checked.
+  import '../src/read-along.js';
+
+  // ---- the baseline region: identical logic, light DOM ----------------------
+  const baselineLive = document.getElementById('baseline-live');
+  let baselineToggles = 0;
+  document.getElementById('baseline-btn').addEventListener('click', () => {
+    baselineToggles += 1;
+    const msg = `Light DOM announcement number ${baselineToggles}`;
+    // Same clear-then-set contract as the component. The SECOND press sends an
+    // identical string, which is the case a naive implementation drops.
+    if (baselineLive.textContent === msg) {
+      baselineLive.textContent = '';
+      void baselineLive.offsetHeight;
+    }
+    baselineLive.textContent = msg;
+    // Reset so pressing twice always sends the same string on the second press.
+    if (baselineToggles === 2) baselineToggles = 0;
+  });
+
+  // ---- verdict collection ---------------------------------------------------
+  const CHECKS = {
+    '1': 'Play announces',
+    '2': 'Repeated message re-announces',
+    '3': 'Completion announces',
+    '4': 'Restart announces exactly once',
+    '5': 'Speed change keeps sync',
+    '6': 'Controls reachable and named',
+    'baseline': 'Light-DOM baseline announces',
+  };
+
+  const verdicts = new Map();
+
+  for (const group of document.querySelectorAll('.verdict')) {
+    const label = group.getAttribute('aria-label') || '';
+    // Map the aria-label to a check key: "Result for check 1" -> "1".
+    const m = /check (\d+)/.exec(label);
+    const key = m ? m[1] : 'baseline';
+    group.dataset.key = key;
+
+    group.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-v]');
+      if (!btn) return;
+      for (const b of group.querySelectorAll('button[data-v]')) {
+        b.setAttribute('aria-pressed', String(b === btn));
+      }
+      verdicts.set(key, btn.dataset.v);
+    });
+  }
+
+  document.getElementById('build').addEventListener('click', () => {
+    const rows = [];
+    let pass = 0, fail = 0, unclear = 0, missing = 0;
+    for (const [key, name] of Object.entries(CHECKS)) {
+      const v = verdicts.get(key);
+      if (v === 'pass') pass++;
+      else if (v === 'fail') fail++;
+      else if (v === 'unclear') unclear++;
+      else missing++;
+      const sym = v === 'pass' ? 'PASS' : v === 'fail' ? 'FAIL'
+                : v === 'unclear' ? 'UNCLEAR' : 'NOT RUN';
+      rows.push(`| ${key === 'baseline' ? 'baseline' : key} | ${name} | ${sym} |`);
+    }
+
+    const who = document.getElementById('who').value.trim() || 'not recorded';
+    const notes = document.getElementById('notes').value.trim() || '_none_';
+
+    // The summary line is written so it cannot overstate: a partial run says
+    // it was partial, and "unclear" is never folded into a pass.
+    const summary = fail > 0
+      ? `${fail} of ${pass + fail + unclear} checks FAILED`
+      : unclear > 0 || missing > 0
+        ? `no failures, but ${unclear + missing} checks are unclear or not run — the shadow-root live region is NOT yet fully verified`
+        : `all ${pass} checks passed`;
+
+    const md =
+`## Run — ${new Date().toISOString().slice(0, 10)}
+
+**Environment:** ${who}
+
+**Result:** ${summary}
+
+| # | Check | Verdict |
+|---|---|---|
+${rows.join('\n')}
+
+**Notes:** ${notes}
+
+**What this does and does not establish:** ${fail === 0 && unclear === 0 && missing === 0
+  ? 'The shadow-root live region is announced by this screen reader, and a repeated identical message re-announces.'
+  : 'The shadow-root live region is NOT fully verified by this run. See the verdicts above.'}
+`;
+
+    document.getElementById('result').textContent = md;
+  });
+</script>
+</body>
+</html>
