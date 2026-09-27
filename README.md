@@ -1,5 +1,15 @@
 # read-along
 
+<!-- vai-hero:start -->
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/hero-poster.png">
+    <img src="docs/media/hero-loop.webp" width="800" alt="A three-line passage. A yellow highlight moves word by word as the text is read aloud, words already read turn bright, and each finished line lifts away as the next one begins.">
+  </picture>
+</p>
+<p align="center"><sub>A 4.8-second loop. It plays once and rests, and shows a still frame if you prefer reduced motion. <a href="https://le-vai.github.io/LE-VAI/loops/#read-along">Watch it on repeat</a>.</sub></p>
+<!-- vai-hero:end -->
+
 An embeddable, engine-agnostic web component for **bimodal reading**:
 karaoke-style word highlighting synchronized to spoken audio, for the open web.
 
