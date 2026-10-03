@@ -45,7 +45,13 @@ EXPECTED_UNREACHABLE = {"LICENSE", "README.md", "package.json"}
 #
 # The rule now: anything documented as a host contract is NOT internal, and
 # this list holds only modules that are neither exported nor documented.
-INTERNAL_MODULES = {"highlight.js"}
+#
+# natural-voice.js is the component's opt-in state machine (hosts use the
+# `naturalVoice` property, not the module); verify.js is the pure core of the
+# read-along-verify CLI (hosts run the command, not the module); announce.js is
+# the component's live-region repeat rule (a host uses the component and hears
+# the result — nothing imports the rule directly).
+INTERNAL_MODULES = {"highlight.js", "natural-voice.js", "verify.js", "announce.js"}
 
 
 def is_internal(path: str) -> bool:
@@ -74,6 +80,10 @@ def main() -> int:
     reachable = set()
     collect_exports(d.get("exports", {}), reachable)
 
+    # Executables named in `bin` are run, not imported: shipped on purpose.
+    bins = d.get("bin", {})
+    executables = {unprefix(v) for v in (bins.values() if isinstance(bins, dict) else [bins])}
+
     shipped = []
     for pattern in d.get("files", []):
         p = pathlib.Path(pattern)
@@ -92,7 +102,7 @@ def main() -> int:
     for f in sorted(shipped):
         if f in reachable:
             continue
-        if f in EXPECTED_UNREACHABLE:
+        if f in EXPECTED_UNREACHABLE or f in executables:
             expected.append(f)
         elif is_internal(f):
             internal.append(f)
@@ -105,7 +115,7 @@ def main() -> int:
             print(f"     {f}")
         print()
     if expected:
-        print("  conventional (fetched, not imported):")
+        print("  conventional (fetched or executed, not imported):")
         for f in expected:
             print(f"     {f}")
         print()

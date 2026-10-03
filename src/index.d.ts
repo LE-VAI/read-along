@@ -23,6 +23,12 @@ export interface Chunk {
   tokens: Token[];
   start: number;
   end: number;
+  /**
+   * Present only when a pronunciations map changes this chunk. Engines say
+   * `spoken.text` instead of the visible words and map their char offsets back
+   * through `spoken.spans`. Tokens (and every public index) stay visible.
+   */
+  spoken?: SpokenView;
 }
 
 export interface Sentence {
@@ -34,6 +40,69 @@ export interface Sentence {
 export declare function tokenize(text: string): Token[];
 export declare function sentences(text: string): Sentence[];
 export declare function chunkTokens(tokens: Token[]): Chunk[];
+
+// ---------------------------------------------------------------------------
+// Pronunciations — spoken-text substitutions (pronunciations.js)
+// ---------------------------------------------------------------------------
+
+/** Visible text -> what the engine should say, e.g. `{ Theravada: "Terra-vah-dah" }`. */
+export type PronunciationMap = Record<string, string>;
+
+export interface CompiledPronunciations {
+  /** Entries in force (keys and values whitespace-collapsed), longest key first. */
+  readonly size: number;
+  readonly entries: ReadonlyArray<{ key: string; spoken: string }>;
+  readonly pattern: RegExp | null;
+  /** Keys skipped because the key or value was not a non-empty string. */
+  readonly skipped: string[];
+}
+
+/** The slice of `SpokenView.text` that says one visible token. Empty when a shorter replacement passed over it. */
+export interface SpokenSpan {
+  /** Global token index (visible). */
+  index: number;
+  start: number;
+  end: number;
+}
+
+export interface PronunciationMatch {
+  key: string;
+  spoken: string;
+  /** First and last visible token index the match covers. */
+  first: number;
+  last: number;
+}
+
+export interface SpokenView {
+  /** What the engine says. */
+  text: string;
+  /** One span per chunk token, same order. */
+  spans: SpokenSpan[];
+  matches: PronunciationMatch[];
+}
+
+/** Parse the attribute's JSON form. Throws on invalid JSON or a non-object. */
+export declare function parsePronunciations(json: string): PronunciationMap;
+/** Validate and compile. Invalid entries are skipped (and listed), never thrown. */
+export declare function compilePronunciations(
+  map: PronunciationMap | Map<string, string> | null | undefined,
+): CompiledPronunciations;
+/** Whole-word, case-insensitive, leftmost-then-longest, single-pass matches. */
+export declare function findPronunciations(
+  text: string,
+  compiled: CompiledPronunciations | null,
+): Array<{ start: number; end: number; key: string; spoken: string }>;
+export declare function spokenChunk(chunk: Pick<Chunk, 'tokens'>, compiled: CompiledPronunciations | null): SpokenView;
+/** Attach `spoken` to every chunk the map changes and remove it elsewhere. Mutates and returns `chunks`. */
+export declare function applySpokenViews<T extends Chunk[]>(chunks: T, compiled: CompiledPronunciations | null): T;
+/** Plain-text form for a build step: the text an engine would be handed, whitespace collapsed. */
+export declare function applyPronunciations(text: string, compiled: CompiledPronunciations | null): string;
+/** `chunk.spoken.text`, or the visible words joined by spaces. */
+export declare function spokenText(chunk: Chunk): string;
+/** The visible token being said at a char offset into `spokenText(chunk)`. */
+export declare function spokenTokenAt(chunk: Chunk, charIndex: number): Token | null;
+/** The chunk from its k-th token on, with the spoken view sliced to match (used by seek). */
+export declare function sliceChunk(chunk: Chunk, k: number): Chunk;
 
 // ---------------------------------------------------------------------------
 // Highlight
@@ -164,6 +233,8 @@ export declare class ExternalEngine implements ReadAlongEngine {
     words?: Array<[number, number, number]>;
   } & Partial<ReadAlongEngine>);
   words: Array<[number, number, number]>;
+  /** The chunks the component handed over, with `spoken` views when a pronunciations map applies. */
+  readonly chunks: Chunk[];
   readonly rate: number;
   /** A bare word index — this engine tracks no chunk. Normalised on the event path. */
   readonly position: number;
@@ -186,7 +257,9 @@ export interface WordTiming {
 /**
  * Distribute a chunk's real audio duration across its words by character count.
  * Char-proportional because the public ONNX export has no word timestamps —
- * sentence-sized chunks keep the error bounded.
+ * sentence-sized chunks keep the error bounded. When the chunk carries a
+ * spoken view, the duration is divided over the SPOKEN characters and each
+ * visible token gets its spoken span's share; indexes stay visible.
  */
 export declare function wordTimingsFromChunk(
   chunk: Chunk,
@@ -199,9 +272,42 @@ export declare function wordTimingsFromChunk(
 
 export type ReadAlongState = 'idle' | 'playing' | 'paused';
 
+/**
+ * An engine the natural-voice loader may return: the normal contract, plus an
+ * optional `load()` the component awaits (narrating `onProgress`) before
+ * swapping it in. KokoroEngine is one.
+ */
+export interface NaturalVoiceEngine extends ReadAlongEngine {
+  load?(): Promise<void>;
+  /** pct is 0..1; 1 means ready, not merely downloaded. */
+  onProgress?: ((pct: number, label: string) => void) | null;
+}
+
+/** Returns the engine to load when the reader presses "Natural voice". */
+export type NaturalVoiceLoader = () => NaturalVoiceEngine | Promise<NaturalVoiceEngine>;
+
+/**
+ * A loader, or a loader plus the download size the button must disclose when
+ * it is not Kokoro's default ("about 80–90 MB").
+ */
+export type NaturalVoiceOption = NaturalVoiceLoader | { load: NaturalVoiceLoader; downloadSize?: string };
+
 export interface ReadAlongElement extends HTMLElement {
   readonly state: ReadAlongState;
   engine: ReadAlongEngine | null;
+  /**
+   * Spoken-text substitutions, applied to what every engine says and never to
+   * what the page shows. Accepts an object, a Map or a JSON string; reads back
+   * the entries in force, or null. Invalid values are ignored with a warning.
+   * Also settable as the `pronunciations` attribute (JSON).
+   */
+  get pronunciations(): PronunciationMap | null;
+  set pronunciations(value: PronunciationMap | Map<string, string> | string | null);
+  /**
+   * Opt-in neural voice. Setting it renders a "Natural voice" toggle; pressing it
+   * loads the engine, swaps it in at the current word and remembers the choice.
+   */
+  naturalVoice: NaturalVoiceOption | null;
   /** Index of the word currently being spoken (-1 when idle). */
   readonly activeToken: number;
   play(): void;
@@ -226,6 +332,9 @@ export declare class ReadAlong extends HTMLElement implements ReadAlongElement {
   constructor();
   readonly state: ReadAlongState;
   engine: ReadAlongEngine | null;
+  get pronunciations(): PronunciationMap | null;
+  set pronunciations(value: PronunciationMap | Map<string, string> | string | null);
+  naturalVoice: NaturalVoiceOption | null;
   readonly activeToken: number;
   play(): void;
   pause(): void;
@@ -259,7 +368,7 @@ declare global {
  *     namespace JSX {
  *       interface IntrinsicElements {
  *         'read-along': React.DetailedHTMLProps<
- *           React.HTMLAttributes<HTMLElement> & { lang?: string; rate?: string | number; seekable?: string },
+ *           React.HTMLAttributes<HTMLElement> & { lang?: string; rate?: string | number; seekable?: string; pronunciations?: string },
  *           HTMLElement
  *         >;
  *       }

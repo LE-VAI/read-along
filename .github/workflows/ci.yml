@@ -32,7 +32,7 @@ jobs:
 
       - name: Verify every module parses
         run: |
-          for f in src/*.js src/engines/*.js; do
+          for f in src/*.js src/engines/*.js bin/*.js; do
             node --check "$f" || exit 1
           done
           echo "all modules parse"
@@ -83,6 +83,9 @@ jobs:
             ['./src/engines/webspeech.js', ['WebSpeechEngine']],
             ['./src/engines/media.js', ['MediaEngine']],
             ['./src/engines/external.js', ['ExternalEngine']],
+            ['./src/pronunciations.js', ['compilePronunciations', 'spokenChunk', 'applySpokenViews', 'spokenTokenAt']],
+            ['./src/natural-voice.js', ['NaturalVoice']],
+            ['./src/verify.js', ['splitSentences', 'compareTranscript', 'classifyRegion']],
           ];
           (async () => {
             for (const [path, names] of mods) {

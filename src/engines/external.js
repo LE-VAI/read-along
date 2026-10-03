@@ -62,6 +62,15 @@ export class ExternalEngine {
 
   setChunks(chunks) { this._chunks = chunks || []; }
 
+  /**
+   * The chunks the component handed over. A chunk that a pronunciations map
+   * changes carries `spoken` ({ text, spans }). A host bridge sends its own
+   * TTS `spokenText(chunk)` (pronunciations.js), keeps timing words by
+   * VISIBLE token index, and the map means the same thing here as in every
+   * built-in engine.
+   */
+  get chunks() { return this._chunks; }
+
   get rate() { return 1; }
   set rate(_r) { /* external clock: speed belongs to the host */ }
 

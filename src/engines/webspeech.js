@@ -17,7 +17,15 @@
  *     has progressed within STALL_MS, the engine switches to VISUAL-ONLY
  *     mode: karaoke word pacing without audio, announced via onMode, so
  *     the read-along still works (and never hangs in "Playing" forever).
+ *
+ * Pronunciations: when a chunk carries a spoken view (see pronunciations.js),
+ * the utterance says the view's text, and every char offset the engine
+ * reports — boundary charIndex and interpolated position alike — is an
+ * offset into THAT string. spokenTokenAt maps it back to the visible word,
+ * so the highlight and every public index stay on the words on the page.
  */
+
+import { spokenText, spokenTokenAt, sliceChunk } from "../pronunciations.js";
 
 const KEEPALIVE_MS = 10_000;
 const BOUNDARY_GRACE_MS = 600;
@@ -115,8 +123,9 @@ export class WebSpeechEngine {
   /**
    * The chunk to speak for index i, consuming a pending seek slice. A seek
    * into mid-chunk swaps in a sliced copy (tokens from the seek word on);
-   * tokens keep their GLOBAL .index so highlights still map. The slice is
-   * one-shot: the next _speakChunk(i+1) gets the full chunk.
+   * tokens keep their GLOBAL .index so highlights still map, and a spoken
+   * view is sliced with them. The slice is one-shot: the next
+   * _speakChunk(i+1) gets the full chunk.
    */
   _chunkFor(i) {
     const chunk = this._chunks[i];
@@ -124,9 +133,7 @@ export class WebSpeechEngine {
       const from = this._pendingSlice;
       this._pendingSlice = null;
       const k = chunk.tokens.findIndex((t) => t.index === from);
-      if (k > 0) {
-        return { tokens: chunk.tokens.slice(k), start: chunk.tokens[k].start, end: chunk.end };
-      }
+      if (k > 0) return sliceChunk(chunk, k);
     }
     return chunk;
   }
@@ -140,7 +147,7 @@ export class WebSpeechEngine {
     }
     this._chunkIdx = i;
     const chunk = this._chunkFor(i);
-    const utter = new SpeechSynthesisUtterance(chunkText(chunk));
+    const utter = new SpeechSynthesisUtterance(spokenText(chunk));
     utter.lang = this.lang;
     utter.rate = this.rate;
     utter.pitch = this.pitch;
@@ -162,7 +169,8 @@ export class WebSpeechEngine {
       this._progress = true;
       this._clearGrace();
       this._cancelInterpolation();
-      const tok = tokenAtChar(chunk, e.charIndex ?? 0);
+      // charIndex counts into the SPOKEN text; map it back to a visible word.
+      const tok = spokenTokenAt(chunk, e.charIndex ?? 0);
       if (tok) this._emitToken(tok.index);
     };
 
@@ -227,7 +235,9 @@ export class WebSpeechEngine {
       if (this._stopped || this._paused || this._chunkIdx !== chunkIdx) return;
       const elapsed = (performance.now() - this._chunkT0) / 1000;
       const chars = elapsed * CHARS_PER_SEC * this.rate;
-      const tok = tokenAtChar(chunk, Math.floor(chars));
+      // Interpolated position runs through the spoken text, which is what
+      // the voice is actually taking time to say.
+      const tok = spokenTokenAt(chunk, Math.floor(chars));
       if (tok) this._emitToken(tok.index);
       this._raf = requestAnimationFrame(step);
     };

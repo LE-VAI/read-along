@@ -16,6 +16,14 @@
  *
  * Engine-agnostic by design: the controller never touches speechSynthesis;
  * it only consumes token/chunk offsets and drives the Highlighter.
+ *
+ * Two opt-ins sit on top of any engine:
+ *   - `pronunciations` — a map applied to what the ENGINE says, never to
+ *     what the page shows (pronunciations.js). Every public word index stays
+ *     a visible-word index.
+ *   - `naturalVoice` — a host-supplied loader for a neural engine, offered to
+ *     the reader as a "Natural voice" button (natural-voice.js). The core
+ *     never imports the neural engine itself.
  */
 
 import { tokenize, chunkTokens } from "./tokenizer.js";
@@ -26,31 +34,56 @@ import {
 } from "./highlight.js";
 import { WebSpeechEngine } from "./engines/webspeech.js";
 import { injectHighlightStyles, hasHighlightStyles } from "./styles.js";
+import {
+  parsePronunciations,
+  compilePronunciations,
+  applySpokenViews,
+} from "./pronunciations.js";
+import { NaturalVoice, DEFAULT_DOWNLOAD_SIZE } from "./natural-voice.js";
+import { announceTo } from "./announce.js";
 
 const template = document.createElement("template");
 template.innerHTML = `
   <style>
+    /*
+     * Contrast rules. Two kinds of text live here, and each takes its colour
+     * from the background it actually sits on:
+     *   - controls (buttons, select) paint their OWN background, so they use
+     *     the system pair Canvas / CanvasText, which the browser keeps
+     *     legible together;
+     *   - loose text (status, the natural-voice note) sits on the HOST's
+     *     background, so it inherits the HOST's text colour at full strength.
+     * The status used to force CanvasText at 75% opacity. On a dark host that
+     * did not declare color-scheme, that was near-black text on a near-black
+     * page, and axe 4.13 flagged it as a serious WCAG 2.2 AA failure. No
+     * opacity, no translucent colours and no color-mix() anywhere in this
+     * sheet: the last because hostile engines drop the whole declaration
+     * (see the note in read-along.css).
+     */
     :host { display: block; }
+    [hidden] { display: none !important; }
     .ra-wrap { display: grid; gap: 10px; }
     .ra-controls {
       display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
       font: 500 13px/1.2 ui-sans-serif, system-ui, sans-serif;
-      color: CanvasText;
     }
     .ra-btn {
       display: inline-flex; align-items: center; justify-content: center;
       gap: 6px; min-height: 30px; min-width: 30px; padding: 5px 12px;
-      border-radius: 999px; border: 1px solid color-mix(in oklab, currentColor 30%, transparent);
+      border-radius: 999px; border: 1px solid CanvasText;
       background: Canvas; color: CanvasText; cursor: pointer;
     }
-    .ra-btn:hover { border-color: currentColor; }
+    .ra-btn:hover { box-shadow: inset 0 0 0 1px currentColor; }
     .ra-btn:focus-visible, .ra-speed:focus-visible {
       outline: 2px solid Highlight; outline-offset: 2px;
     }
-    .ra-btn[aria-pressed="true"] { background: color-mix(in oklab, Highlight 18%, Canvas); }
+    /* Pressed reads as a heavier ring, not a tint: no colour is needed to see
+       it, and the label or icon changes with it too. */
+    .ra-btn[aria-pressed="true"] { box-shadow: inset 0 0 0 2px currentColor; }
     .ra-btn svg { width: 13px; height: 13px; fill: currentColor; flex: none; }
-    .ra-status { font-variant-numeric: tabular-nums; opacity: 0.75; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ra-speed { border-radius: 8px; padding: 5px 7px; border: 1px solid color-mix(in oklab, currentColor 25%, transparent); background: Canvas; color: CanvasText; }
+    .ra-status { font-variant-numeric: tabular-nums; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ra-note { font-variant-numeric: tabular-nums; }
+    .ra-speed { border-radius: 8px; padding: 5px 7px; border: 1px solid CanvasText; background: Canvas; color: CanvasText; }
     .ra-content { display: block; }
   </style>
   <div class="ra-wrap" part="wrap">
@@ -72,6 +105,11 @@ template.innerHTML = `
         <option value="1.5">1.5×</option>
         <option value="2">2×</option>
       </select>
+      <button class="ra-btn" id="natural" aria-pressed="false" aria-describedby="naturalnote" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path id="naturalicon" d="M1.5 6h2v4h-2zM5.5 3h2v10h-2zM9.5 5h2v6h-2zM13 7h2v2h-2z"/></svg>
+        <span>Natural voice</span>
+      </button>
+      <span class="ra-note" id="naturalnote" hidden></span>
     </div>
     <div class="ra-content"><slot></slot></div>
     <p id="ra-live" aria-live="polite" style="position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);"></p>
@@ -80,6 +118,8 @@ template.innerHTML = `
 
 const ICON_PLAY = "M4 2.5v11l9-5.5z";
 const ICON_PAUSE = "M3.5 2.5h3.2v11H3.5zM9.3 2.5h3.2v11H9.3z";
+const ICON_VOICE = "M1.5 6h2v4h-2zM5.5 3h2v10h-2zM9.5 5h2v6h-2zM13 7h2v2h-2z";
+const ICON_CHECK = "M6.2 11.6 2.7 8.1l1.1-1.1 2.4 2.4 6-6 1.1 1.1z";
 
 /** Instances holding the voice right now — enforces a one-voice policy. */
 const ACTIVE = new Set();
@@ -94,7 +134,22 @@ class ReadAlong extends HTMLElement {
     this._chunks = [];
     this._highlighter = null;
     this._state = "idle"; // idle | playing | paused
+    this._pron = null;          // compiled pronunciations, or null
+    this._natural = null;       // NaturalVoice controller, when offered
+    this._naturalOption = null; // what the host assigned to naturalVoice
+    this._standardEngine = null;
+    this._resumeWord = null;    // where play() resumes after a paused swap
+    this._swapping = false;
     this._wireUI();
+    // A property assigned before the element upgraded is an own property
+    // that shadows the accessor. Re-assign it so the setter runs.
+    for (const prop of ["pronunciations", "naturalVoice"]) {
+      if (Object.prototype.hasOwnProperty.call(this, prop)) {
+        const value = this[prop];
+        delete this[prop];
+        this[prop] = value;
+      }
+    }
   }
 
   connectedCallback() {
@@ -132,6 +187,8 @@ class ReadAlong extends HTMLElement {
       this._highlighter.setTokenRanges(buildTokenRanges(this, this._tokens));
     }
     this._prepare();
+    // A reader who chose the natural voice on an earlier visit gets it again.
+    this._natural?.autoUpgrade();
   }
 
   disconnectedCallback() {
@@ -150,6 +207,73 @@ class ReadAlong extends HTMLElement {
     this._engine = e;
     this._bindEngine();
     if (e && this._chunks.length) e.setChunks?.(this._chunks);
+    // A host assigning its own engine takes the voice out of the toggle's
+    // hands; the button must stop claiming the natural voice is speaking.
+    if (!this._swapping && this._natural?.state === "on" && e !== this._natural.engine) {
+      this._natural.detach();
+    }
+  }
+
+  /**
+   * Spoken-text substitutions: `{ "Theravada": "Terra-vah-dah" }`.
+   *
+   * Applied to what the engine SAYS, for every engine, and never to what the
+   * page shows. Highlighting, events, seek and `position` all keep counting
+   * visible words. Whole-word, case-insensitive, multi-word keys allowed,
+   * longest key wins (pronunciations.js has the exact rules).
+   *
+   * Accepts an object, a Map, a JSON string or null. An invalid value is
+   * ignored with a console warning and the previous map stays in force: a
+   * typo in a pronunciation must never cost a reader their audio. Reading the
+   * property returns the entries actually in force, or null.
+   */
+  get pronunciations() {
+    if (!this._pron) return null;
+    return Object.fromEntries(this._pron.entries.map((e) => [e.key, e.spoken]));
+  }
+  set pronunciations(value) {
+    this._setPronunciations(value, "property");
+  }
+
+  /**
+   * Opt-in natural voice. A function returning an engine (or a promise of
+   * one), or `{ load, downloadSize }` when the download is not Kokoro's
+   * ~80–90 MB. Setting it shows a "Natural voice" button; pressing it loads
+   * the engine, swaps it in at the current word and remembers the choice.
+   * The component never imports the engine itself: the host's loader does.
+   *
+   *   el.naturalVoice = async () => {
+   *     const { KokoroEngine } = await import("@designesy/read-along/engines/kokoro.js");
+   *     return new KokoroEngine({ voice: "af_heart" });
+   *   };
+   */
+  get naturalVoice() { return this._naturalOption; }
+  set naturalVoice(option) {
+    const load = typeof option === "function" ? option
+      : typeof option?.load === "function" ? option.load : null;
+    if (option != null && !load) {
+      console.warn("read-along: naturalVoice must be a function that returns an engine, or { load, downloadSize }");
+      return;
+    }
+    if (option === this._naturalOption) return;
+    if (this._natural) {
+      const wasOn = this._natural.state === "on";
+      this._natural.destroy();
+      this._natural = null;
+      if (wasOn) this._swapEngine(this._standardEngine || this._defaultEngine());
+    }
+    this._naturalOption = option ?? null;
+    if (load) {
+      this._natural = new NaturalVoice({
+        loader: () => load(),
+        downloadSize: typeof option.downloadSize === "string" ? option.downloadSize : DEFAULT_DOWNLOAD_SIZE,
+        announce: (msg) => this._announce(msg),
+        render: (state, info) => this._renderNatural(state, info),
+        swap: (engine) => this._swapNatural(engine),
+      });
+    }
+    this._renderNatural(this._natural?.state ?? "off", { downloadSize: this._natural?.downloadSize });
+    if (this.isConnected && this._prepared) this._natural?.autoUpgrade();
   }
 
   play() { this._play(); }
@@ -166,12 +290,7 @@ class ReadAlong extends HTMLElement {
     this._prepare();
     if (!this._engine || this._state === "paused") return;
     if (i < 0 || i >= this._tokens.length) return;
-    this._stop();
-    this._state = "playing";
-    this._bindEngine();
-    this._engine.rate = parseFloat(this._els.speed.value) || 1;
-    this._engine.speak(this._chunks, i);
-    this._setPlayingUi(true);
+    this._seekTo(i);
     this._announce(`Playing from word ${i + 1}`);
     this._emitEvent("seek");
   }
@@ -179,13 +298,19 @@ class ReadAlong extends HTMLElement {
   /** Index of the word currently being spoken (-1 when idle). */
   get activeToken() { return this._highlighter ? this._highlighter._markIndex : -1; }
 
-  static get observedAttributes() { return ["lang", "rate", "seekable", "no-inject-styles"]; }
+  static get observedAttributes() { return ["lang", "rate", "seekable", "no-inject-styles", "pronunciations"]; }
 
   attributeChangedCallback(name, _old, value) {
     // no-inject-styles changes whether the rules were adopted, so it must be
     // honoured even before an engine exists.
     if (name === "no-inject-styles") {
       if (value === null) injectHighlightStyles(this.ownerDocument);
+      return;
+    }
+    // Pronunciations are stored before any engine exists and applied when the
+    // chunks are built. Removing the attribute (or emptying it) clears them.
+    if (name === "pronunciations") {
+      this._setPronunciations(value === null || !value.trim() ? null : value, "attribute");
       return;
     }
     if (!this._engine) return;
@@ -200,9 +325,11 @@ class ReadAlong extends HTMLElement {
     this._els = {
       play: $("play"), playicon: $("playicon"), playlabel: $("playlabel"),
       restart: $("restart"), status: $("status"), speed: $("speed"),
+      natural: $("natural"), naturalicon: $("naturalicon"), naturalnote: $("naturalnote"),
       live: $("ra-live"),
     };
     this._els.play.addEventListener("click", () => this.toggle());
+    this._els.natural.addEventListener("click", () => this._natural?.toggle());
     this._els.restart.addEventListener("click", () => {
       this.stop();
       this.play();
@@ -225,13 +352,109 @@ class ReadAlong extends HTMLElement {
       forceFallback: this.hasAttribute("force-fallback"),
     });
     this._highlighter.setTokenRanges(buildTokenRanges(this, this._tokens));
+    applySpokenViews(this._chunks, this._pron);
     if (this.hasAttribute("seekable")) this._wireSeek();
-    if (!this._engine) {
-      this.engine = new WebSpeechEngine({
-        lang: this.getAttribute("lang") || undefined,
-        rate: parseFloat(this.getAttribute("rate")) || 1,
-      });
+    if (!this._engine) this.engine = this._defaultEngine();
+  }
+
+  _defaultEngine() {
+    return new WebSpeechEngine({
+      lang: this.getAttribute("lang") || undefined,
+      rate: parseFloat(this.getAttribute("rate")) || 1,
+    });
+  }
+
+  // -- pronunciations --------------------------------------------------------
+
+  _setPronunciations(value, source) {
+    let map = value;
+    if (typeof value === "string") {
+      try {
+        map = parsePronunciations(value);
+      } catch (err) {
+        console.warn(`read-along: ignoring the pronunciations ${source}: ${err.message}`);
+        return;
+      }
+    } else if (value != null && (typeof value !== "object" || Array.isArray(value))) {
+      console.warn(
+        `read-along: ignoring the pronunciations ${source}: expected an object like {"Theravada": "Terra-vah-dah"}`
+      );
+      return;
     }
+    const compiled = map == null ? null : compilePronunciations(map);
+    if (compiled?.skipped.length) {
+      console.warn(
+        `read-along: skipped pronunciation entries that need a non-empty text key and value: ${compiled.skipped.join(", ")}`
+      );
+    }
+    this._pron = compiled?.size ? compiled : null;
+    if (!this._prepared) return; // applied when the chunks are built
+    applySpokenViews(this._chunks, this._pron);
+    // Same chunk objects, now carrying (or shedding) spoken views. A chunk
+    // already being spoken finishes as it started; the next one uses the map.
+    this._engine?.setChunks?.(this._chunks);
+  }
+
+  // -- natural voice ---------------------------------------------------------
+
+  /** Called by the controller: switch to `engine`, or back when null. */
+  _swapNatural(engine) {
+    if (engine && this._engine !== engine) this._standardEngine = this._engine;
+    return this._swapEngine(engine || this._standardEngine || this._defaultEngine());
+  }
+
+  /**
+   * Swap engines without losing the reading position. Playing: the new
+   * engine continues from the current word. Paused: the next play() resumes
+   * from that word. Returns a sentence for the announcement, or "".
+   */
+  _swapEngine(next) {
+    const wasPlaying = this._state === "playing";
+    const at = this._state === "idle" ? (this._resumeWord ?? -1) : this._readingWord();
+    this._swapping = true;
+    try {
+      this.engine = next; // stops the old engine if it was speaking
+    } finally {
+      this._swapping = false;
+    }
+    if (at < 0) return "";
+    if (wasPlaying) {
+      this._seekTo(at);
+      this._emitEvent("seek");
+      return `Continuing from word ${at + 1}.`;
+    }
+    this._resumeWord = at;
+    this._setStatus("Paused");
+    return `Press Listen to continue from word ${at + 1}.`;
+  }
+
+  /** The word being read right now, from the highlight or the engine. */
+  _readingWord() {
+    const shown = this.activeToken;
+    if (shown >= 0) return shown;
+    const pos = this._engine?.position;
+    const token = typeof pos === "number" ? pos : (pos?.token ?? -1);
+    return token >= 0 ? token : -1;
+  }
+
+  _renderNatural(state, info = {}) {
+    const { natural, naturalicon, naturalnote } = this._els;
+    const offered = !!this._natural;
+    natural.hidden = !offered;
+    naturalnote.hidden = !offered;
+    if (!offered) return;
+    // Pressed means CHOSEN: true while loading too, with the note saying how
+    // far along the download is. The note is the button's description, so a
+    // screen reader hears the state and the reason together.
+    natural.setAttribute("aria-pressed", String(state === "loading" || state === "on"));
+    naturalicon.setAttribute("d", state === "on" ? ICON_CHECK : ICON_VOICE);
+    const size = info.downloadSize || DEFAULT_DOWNLOAD_SIZE;
+    naturalnote.textContent =
+      state === "on" ? "On, runs on this device"
+      : state === "loading" ? (info.pct > 0 ? `Downloading voice model, ${Math.round(info.pct * 100)}%` : "Loading voice model")
+      : state === "failed" ? "Could not load, using the standard voice"
+      : info.loaded ? "Off, standard voice"
+      : `Downloads a voice model once (${size})`;
   }
 
   // -- click-to-seek ---------------------------------------------------------
@@ -327,7 +550,15 @@ class ReadAlong extends HTMLElement {
         }
       }
     };
-    e.onEnd = () => this._finish();
+    // Every engine calls onEnd from stop() as well as at a natural end. _stop()
+    // goes idle BEFORE stopping the engine, and a swapped-out engine is no
+    // longer this._engine, so either condition means "stopped", not "finished".
+    // Without this, Restart, the one-voice handoff and every voice swap told a
+    // screen reader "Finished reading" and fired `done` ahead of `stop`.
+    e.onEnd = () => {
+      if (this._engine !== e || this._state === "idle") return;
+      this._finish();
+    };
     e.onError = (err) => {
       this._announce(`Read-along error: ${err.message}`);
       this._setStatus("Error");
@@ -357,13 +588,33 @@ class ReadAlong extends HTMLElement {
     }
     if (this._state === "playing") return;
     if (!this._chunks.length) return;
+    // After an engine swap while paused, pick up where the reader left off.
+    const from = this._resumeWord ?? 0;
+    this._resumeWord = null;
     this._state = "playing";
     this._bindEngine();
     this._engine.rate = parseFloat(this._els.speed.value) || 1;
-    this._engine.speak(this._chunks);
+    this._engine.speak(this._chunks, from);
     this._setPlayingUi(true);
-    this._announce("Playing, automated voice");
+    this._announce(from > 0 ? `Playing from word ${from + 1}` : "Playing, automated voice");
     this._emitEvent("play");
+  }
+
+  /**
+   * Start the engine at word i. The one-voice policy applies: seeking is
+   * playing, so it stops any other player and registers this one. Before,
+   * a click-to-seek left the player out of ACTIVE, and the next player
+   * started speaking over it.
+   */
+  _seekTo(i) {
+    this._stop();
+    for (const other of ACTIVE) if (other !== this) other.stop();
+    ACTIVE.add(this);
+    this._state = "playing";
+    this._bindEngine();
+    this._engine.rate = parseFloat(this._els.speed.value) || 1;
+    this._engine.speak(this._chunks, i);
+    this._setPlayingUi(true);
   }
 
   _pause() {
@@ -377,6 +628,7 @@ class ReadAlong extends HTMLElement {
 
   _stop() {
     ACTIVE.delete(this);
+    this._resumeWord = null;
     if (this._state === "idle") return;
     const wasEngine = this._engine;
     this._state = "idle";
@@ -435,25 +687,24 @@ class ReadAlong extends HTMLElement {
   /**
    * Announce a status message to assistive technology.
    *
-   * The clear-then-set is not belt-and-braces, it is the whole mechanism. A
-   * live region announces a CHANGE, and assigning an identical string produces
-   * no DOM mutation — so `live.textContent = "Paused"` twice announces nothing
-   * the second time. That is reachable in ordinary use: a pause/resume cycle
-   * repeats "Paused", and seeking to the same word repeats "Playing from word
-   * N". The second one is silent for no reason a user could detect.
+   * The rule lives in announce.js so it can be unit-tested (this module cannot
+   * be imported outside a browser). The short version: an identical repeat
+   * needs the clear and the set in DIFFERENT tasks — same-task writes are
+   * coalesced into no net change and a screen reader stays silent. Measured
+   * 2026-10-02, Chrome 153 + NVDA 2026.2.
    *
-   * Clearing first guarantees a mutation. The clear and the set happen in the
-   * same task, so the region settles on the new string and an AT user hears one
-   * message rather than an empty one followed by a real one.
+   * The sequence token stops a pending repeat from overwriting a newer
+   * message: only the most recent call may complete its scheduled write.
    */
   _announce(msg) {
-    const live = this._els.live;
-    if (live.textContent === msg) {
-      // Same string: force a mutation so the region actually fires.
-      live.textContent = '';
-      void live.offsetHeight; // flush the clear so it is observed
-    }
-    live.textContent = msg;
+    announceTo(
+      this._els.live,
+      msg,
+      {
+        nextSeq: () => (this._announceSeq = (this._announceSeq || 0) + 1),
+        isCurrent: (seq) => this._announceSeq === seq,
+      }
+    );
   }
 }
 
@@ -462,3 +713,4 @@ if (!customElements.get("read-along")) {
 }
 
 export { ReadAlong, WebSpeechEngine, tokenize, chunkTokens, Highlighter, buildTokenRanges, supportsHighlightAPI };
+export { compilePronunciations, spokenChunk, applyPronunciations } from "./pronunciations.js";

@@ -38,6 +38,12 @@ const TRAILING_SIL_MS = 250;
 
 import { locateTokenChunk } from "./webspeech.js"; // acoustic buffer so the last word isn't clipped
 import { wordTimingsFromChunk } from "../timings.js";
+import { spokenText } from "../pronunciations.js";
+
+/** Files smaller than this are configs/tokenizers — kept out of the progress
+ * fraction, or a 2 kB config finishing first would report 100% before the
+ * 80 MB model file had even started. */
+const PROGRESS_MIN_BYTES = 1_000_000;
 
 export class KokoroEngine {
   /**
@@ -91,6 +97,20 @@ export class KokoroEngine {
   }
 
   /**
+   * Engine contract: the component's speed control sets `rate`. Kokoro takes
+   * its speed at synthesis time, so `rate` is `speed` under the contract's
+   * name. Without this the speed control silently did nothing on this
+   * engine. A change applies from the next chunk synthesized; the cache is
+   * keyed by speed, so a chunk already heard at the old speed is not reused.
+   */
+  get rate() {
+    return this.speed;
+  }
+  set rate(r) {
+    if (Number.isFinite(r) && r > 0) this.speed = r;
+  }
+
+  /**
    * Load the model (idempotent). Call up-front to shift the model download
    * off the play button, or let the first play trigger it.
    * @returns {Promise<void>}
@@ -98,10 +118,32 @@ export class KokoroEngine {
   async load() {
     if (this._tts) return;
     this.onProgress?.(0, "Loading voice model");
+    // Download progress, as one fraction across the model's large files.
+    // Monotonic, and held under 1 until the model is actually usable: 100%
+    // means ready, not merely downloaded.
+    const files = new Map();
+    let shown = 0;
+    const progress_callback = (e) => {
+      if (e?.status !== "progress" || !e.total) return;
+      files.set(e.file, [e.loaded, e.total]);
+      let loaded = 0;
+      let total = 0;
+      for (const [l, t] of files.values()) {
+        if (t < PROGRESS_MIN_BYTES) continue;
+        loaded += l;
+        total += t;
+      }
+      if (!total) return;
+      const pct = Math.min(0.99, loaded / total);
+      if (pct <= shown) return;
+      shown = pct;
+      this.onProgress?.(pct, "Downloading voice model");
+    };
     try {
       this._tts = await KokoroTTS.from_pretrained(this.model, {
         dtype: this.dtype,
         device: this.device,
+        progress_callback,
       });
       this.onProgress?.(1, "Voice model ready");
     } catch (err) {
@@ -163,7 +205,8 @@ export class KokoroEngine {
     const key = this._cacheKey(chunk);
     const hit = this._cache.get(key);
     if (hit) return hit;
-    const text = chunk.tokens.map((t) => t.text).join(" ");
+    // The spoken view's text when pronunciations apply; else the visible words.
+    const text = spokenText(chunk);
     const splitter = new TextSplitterStream();
     const stream = this._tts.stream(splitter, {
       voice: this.voice,
@@ -182,10 +225,14 @@ export class KokoroEngine {
     return audio;
   }
 
-  /** FNV-1a over voice|speed|dtype|model|chunk-text — the audio identity. */
+  /**
+   * FNV-1a over voice|speed|dtype|model|spoken-text — the audio identity.
+   * Keyed on the SPOKEN text, so changing a pronunciation re-synthesizes the
+   * chunk instead of replaying the old, wrong audio from the cache.
+   */
   _cacheKey(chunk) {
     const s = `${this.voice}|${this.speed}|${this.dtype}|${this.model}|` +
-      chunk.tokens.map((t) => t.text).join(" ");
+      spokenText(chunk);
     let h = 2166136261;
     for (let i = 0; i < s.length; i++) {
       h ^= s.charCodeAt(i);

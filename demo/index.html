@@ -11,7 +11,7 @@
     --border: oklch(0.88 0.01 270);
     --text: oklch(0.22 0.02 270);
     --dim: oklch(0.5 0.02 270);
-    --accent: oklch(0.55 0.14 250);
+    --accent: oklch(0.5 0.14 250); /* 0.55 was 4.44:1 on --bg; 0.50 is 5.51 (bg), 6.01 (surface), 5.03 (code) */
   }
   * { box-sizing: border-box; margin: 0; }
   body {
@@ -46,10 +46,25 @@
   .kokoro-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 6px 0 14px; font: 500 13px/1.3 ui-sans-serif, system-ui, sans-serif; color: var(--dim); }
   .kokoro-controls select { border-radius: 8px; padding: 5px 7px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; }
   .kokoro-status { font-variant-numeric: tabular-nums; }
+
+  /* Page navigation + footer: landmarks a screen-reader user can jump to, and
+     a way between the demos that does not depend on the README. */
+  .demo-nav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 28px;
+    font: 500 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .demo-nav a, .demo-footer a { color: inherit; text-underline-offset: 0.18em;
+    display: inline-flex; align-items: center; min-height: 24px; }
+  .demo-nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+  .demo-nav a:focus-visible, .demo-footer a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+  .demo-footer { margin-top: 36px; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
 </style>
 <link rel="stylesheet" href="../src/read-along.css">
 </head>
 <body>
+<nav class="demo-nav" aria-label="read-along pages">
+  <a href="index.html" aria-current="page">Demo</a>
+  <a href="at-test.html">Screen reader test page</a>
+</nav>
+<main>
 <p class="eyebrow">Open source · MIT</p>
 <h1>read-along</h1>
 <p class="sub">An embeddable web component for bimodal reading: synchronized word
@@ -111,6 +126,20 @@ learners, tired eyes, and anyone whose hands are busy.</p>
   </read-along>
 </div>
 
+<div class="card">
+  <h2>Pronunciation fixes, and the natural voice on request</h2>
+  <p>This player carries <code>pronunciations='{"Theravada": "Terra-vah-dah"}'</code>.
+  The voice says the respelling; the page keeps the real word, and the highlight
+  lands on the word you can see. A neural voice can be fluently wrong (Kokoro
+  reads this word as "The Ravada"), so the fix lives at the voice, never in the text.
+  The <em>Natural voice</em> button appears because this page opted in with
+  <code>naturalVoice</code>: nothing downloads until you press it.</p>
+  <read-along id="pron-reader" pronunciations='{"Theravada": "Terra-vah-dah"}'>
+    <p>Theravada is the oldest surviving school of Buddhism. Its scriptures are
+    kept in Pali, and Theravada monks in Sri Lanka and Thailand still recite them aloud.</p>
+  </read-along>
+</div>
+
 <read-along class="card" force-fallback>
   <h2>Guaranteed visible: the fallback path</h2>
   <p>Some embedded browsers expose the highlight registry but never paint
@@ -147,9 +176,13 @@ learners, tired eyes, and anyone whose hands are busy.</p>
   </read-along>
 </div>
 
-<footer>
+</main>
+
+<footer class="demo-footer">
   MIT licensed · no dependencies · ~5 kB unminified ·
-  works with the page's own fonts and colors.
+  works with the page's own fonts and colors ·
+  <a href="https://github.com/LE-VAI/read-along">Source on GitHub</a> ·
+  <a href="https://www.npmjs.com/package/@designesy/read-along">npm</a>
 </footer>
 
 <script type="importmap">
@@ -273,6 +306,14 @@ learners, tired eyes, and anyone whose hands are busy.</p>
   };
   voiceSel.addEventListener("change", () => { if (engine) setKokoro(); });
   card.addEventListener("pointerdown", () => { if (!engine) setKokoro(); }, { once: true });
+</script>
+<script type="module">
+  // The opt-in natural voice: the core never imports kokoro-js; this loader does,
+  // and only when the reader presses "Natural voice".
+  document.getElementById("pron-reader").naturalVoice = async () => {
+    const { KokoroEngine } = await import("../src/engines/kokoro.js");
+    return new KokoroEngine({ voice: "af_heart" });
+  };
 </script>
 </body>
 </html>

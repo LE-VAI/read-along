@@ -126,9 +126,23 @@
     border-radius: .75rem; padding: 1.25rem 1.5rem;
   }
   .sr-only-hint { color: var(--text-dim); font-size: .85rem; margin-top: .5rem; }
+
+  /* Page navigation + footer: landmarks a screen-reader user can jump to, and
+     a way between the demos that does not depend on the README. */
+  .demo-nav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 28px;
+    font: 500 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .demo-nav a, .demo-footer a { color: inherit; text-underline-offset: 0.18em;
+    display: inline-flex; align-items: center; min-height: 24px; }
+  .demo-nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+  .demo-nav a:focus-visible, .demo-footer a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+  .demo-footer { margin-top: 36px; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
 </style>
 </head>
 <body>
+<nav class="demo-nav" aria-label="read-along pages">
+  <a href="index.html">Demo</a>
+  <a href="at-test.html" aria-current="page">Screen reader test page</a>
+</nav>
 <main>
   <h1>Screen reader test — read-along live region</h1>
   <p class="lede">
@@ -196,7 +210,7 @@
     silent on every repeated message. A user cannot tell the difference between
     "the tool ignored me" and "the tool is broken."</p>
     <div class="verdict" role="group" aria-label="Result for check 2">
-      <button data-v="pass" aria-pressed="false">All three announced</button>
+      <button data-v="pass" aria-pressed="false">Both pauses announced</button>
       <button data-v="fail" aria-pressed="false">Second pause was silent</button>
       <button data-v="unclear" aria-pressed="false">Not sure</button>
     </div>
@@ -293,6 +307,12 @@
     <output id="result" aria-live="off">Press the button above to generate the markdown to paste into docs/AT-TEST-RESULT.md.</output>
   </div>
 </main>
+<footer class="demo-footer">
+  read-along · MIT licensed ·
+  <a href="https://github.com/LE-VAI/read-along">Source on GitHub</a> ·
+  <a href="https://www.npmjs.com/package/@designesy/read-along">npm</a>
+</footer>
+
 
 <script type="module">
   // Load the component. Without this the <read-along> tag below stays an
@@ -303,19 +323,18 @@
 
   // ---- the baseline region: identical logic, light DOM ----------------------
   const baselineLive = document.getElementById('baseline-live');
-  let baselineToggles = 0;
   document.getElementById('baseline-btn').addEventListener('click', () => {
-    baselineToggles += 1;
-    const msg = `Light DOM announcement number ${baselineToggles}`;
-    // Same clear-then-set contract as the component. The SECOND press sends an
-    // identical string, which is the case a naive implementation drops.
+    // Same contract as the component, including the 2026-10-02 measurement:
+    // a clear and a re-set in the SAME task are coalesced into no net change
+    // and a screen reader stays silent on the repeat — the clear must land in
+    // one task and the set in a later one.
+    const msg = 'Light DOM announcement';
     if (baselineLive.textContent === msg) {
       baselineLive.textContent = '';
-      void baselineLive.offsetHeight;
+      setTimeout(() => { baselineLive.textContent = msg; }, 60);
+    } else {
+      baselineLive.textContent = msg;
     }
-    baselineLive.textContent = msg;
-    // Reset so pressing twice always sends the same string on the second press.
-    if (baselineToggles === 2) baselineToggles = 0;
   });
 
   // ---- verdict collection ---------------------------------------------------

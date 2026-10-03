@@ -86,3 +86,58 @@ environment, so a future reader can tell what was actually measured rather than
 what was assumed.
 
 Related: `docs/AT-TEST-STEPS.md`, `src/read-along.js` (`_announce`).
+
+---
+
+## Run — 2026-10-02 (automated, NVDA Speech Viewer as the instrument)
+
+**Environment:** NVDA 2026.2.0.57664, Chrome 153.0.8010.54, Windows 11 (build 10.0.26200).
+**Method:** the component was driven programmatically (real control activation over CDP) while NVDA's
+**Speech Viewer** was read as text cross-process via `WM_GETTEXT` on its RICHEDIT control. This
+removes the ear-judgement from every step: an announcement is a line in the log, or it is not.
+
+**Result: 1 real defect found, root-caused, fixed, and re-verified live.**
+
+### The defect — the repeat announced only once
+
+`sources/read-along.js` `_announce()` cleared the live region and re-set it **in the same task**.
+Chromium coalesces those two writes into no net change, so NVDA saw no mutation and stayed silent
+on a repeated identical message. This is exactly the failure check 2 exists to catch, and it was
+reproducible on the shipped build:
+
+| Test | Writes | NVDA announcements |
+|---|---|---|
+| `_announce("Paused")` twice, as shipped | clear+set, same task | **1** (the second was silent) |
+| Page baseline button, as shipped | clear+set, same task | **1** |
+| Patched: clear now, set +120 ms | split across tasks | **2** |
+| Patched in reverse order (control) | split across tasks | **2** |
+
+The 2026-09-22 record ("all three announced") did **not** reproduce on this Chrome + NVDA pair.
+
+### The fix
+
+- `src/announce.js` (new) — the repeat rule as a pure module: different message → write now;
+  identical message → clear now, re-set on a ~60 ms timer, with a sequence token so a stale timer
+  can never overwrite a newer message.
+- `src/read-along.js` — `_announce()` delegates to it.
+- `demo/at-test.html` — the light-DOM baseline button uses the same contract (it had the same bug).
+- `tests/announce.test.mjs` (new, 8 tests) — pins the rule, including the exact field defect.
+
+### Re-verified live, after the fix
+
+| Check | Page writes | NVDA announcements | Verdict |
+|---|---|---|---|
+| 2 — pause/resume/pause (2 identical "Paused") | `Paused` → `""` → `Paused` | **2** | PASS |
+| Baseline — 3 identical presses | `announcement` → `""` → `announcement` (×3) | **3** | PASS |
+| 4 — restart mid-speech | — | `Finished reading` **+0** | PASS |
+| 3 — play to completion | — | `Finished reading` **+1** | PASS |
+| 6 — control names | — | `Listen toggle button`, `Restart from the beginning button`, `Reading speed combo box` | PASS |
+
+Unit suite: **133/133** (125 before + 8 new).
+
+### What this adds to the standing claim
+
+The 2026-09-22 run established that NVDA announces the shadow-root live region **at all**. This run
+found that it did **not** re-announce an identical repeat — the second half of that claim — and fixed
+it. The verification method (Speech Viewer read as text) is new and is what made the defect visible
+without a person listening.

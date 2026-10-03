@@ -25,7 +25,7 @@ user heard anything.
    started after the page loads may not observe the region from its beginning.
 2. Serve the page — do not open the file directly:
    ```bash
-   cd D:\1ATLAS\read-along
+   cd read-along   # your clone of this repository
    python3 -m http.server 8793
    ```
    Then open **http://127.0.0.1:8793/demo/at-test.html**
@@ -46,7 +46,7 @@ guess; it keeps the claim honest.
 | # | Do this | Pass looks like |
 |---|---|---|
 | 1 | Press **Play** | Speech starts, and a status message is announced |
-| 2 | Press **Pause** → **Play** → **Pause** | **All three** announce, including the second Pause (same word as the first) |
+| 2 | Press **Pause** → **Play** → **Pause** | Both **Pause** presses announce, including the second (same word as the first). Play after Pause resumes **silently** — by design; the second Pause is the real test |
 | 3 | Press **Play**, let it finish untouched | A completion message is announced |
 | 4 | Press **Play**, then **Restart** mid-speech | Restart announces, and only once for the one press |
 | 5 | Change **Speed** while playing | Rate changes, word highlighting keeps up — no stall, no skip |

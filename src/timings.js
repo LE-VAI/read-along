@@ -32,11 +32,28 @@
  *
  * The named-field form. Pass the result to `toEngineManifest()` before giving
  * it to ExternalEngine or MediaEngine — they take tuples, not objects.
+ *
+ * When the chunk carries a spoken view (pronunciations.js), the audio says
+ * the VIEW's text, so the duration is divided across those characters and
+ * each visible token gets the slice of time its spoken span takes. Indexes
+ * stay visible: "Theravada" spoken as "Terra-vah-dah" is timed as the
+ * longer spoken word, and is still token "Theravada". A build step that
+ * pre-synthesizes audio gets the same mapping by passing the same chunk.
  */
 export function wordTimingsFromChunk(chunk, audio) {
+  const durMs = (audio.samples.length / audio.sampleRate) * 1000;
+  const spoken = chunk.spoken;
+  if (spoken) {
+    if (!spoken.text.length) return [];
+    const ms = durMs / spoken.text.length;
+    return chunk.tokens.map((tok, k) => ({
+      tokenIndex: tok.index,
+      startMs: spoken.spans[k].start * ms,
+      endMs: spoken.spans[k].end * ms,
+    }));
+  }
   const chars = chunk.tokens.map((t) => t.text).join(" ");
   if (!chars.length) return [];
-  const durMs = (audio.samples.length / audio.sampleRate) * 1000;
   const charMs = durMs / chars.length;
   const words = [];
   let acc = 0; // chars consumed so far (including joining spaces)
